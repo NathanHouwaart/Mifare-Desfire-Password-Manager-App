@@ -1,0 +1,3 @@
+[submodule "native/NfcCpp"]
+	path = native/NfcCpp
+	url = https://github.com/NathanHouwaart/NfcCpp
