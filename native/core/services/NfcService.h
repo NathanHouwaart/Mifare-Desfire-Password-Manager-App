@@ -10,6 +10,8 @@ class NfcService {
 public:
     explicit NfcService(std::unique_ptr<ports::INfcReader> reader);
     ports::Result<std::string> connect(const std::string& port);
+    ports::Result<bool> disconnect();
+    void setLogCallback(ports::NfcLogCallback callback);
 
 private:
     std::unique_ptr<ports::INfcReader> _reader;

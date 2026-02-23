@@ -38,6 +38,8 @@ export const MyLibraryBinding: {
 
 export interface NfcCppBinding {
     connect(port: string): Promise<string>;
+    disconnect(): Promise<boolean>;
+    setLogCallback(callback: (level: string, message: string) => void): void;
 }
 
 export const NfcCppBinding: {

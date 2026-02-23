@@ -7,6 +7,8 @@ declare module '../../build/myaddon.node' {
   export class NfcCppBinding {
     constructor();
     connect(port: string): Promise<string>;
+    disconnect(): Promise<boolean>;
+    setLogCallback(callback: (level: string, message: string) => void): void;
   }
 }
 
