@@ -27,11 +27,19 @@ if (!addonPath) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const addon: any = require(addonPath);
 
-export interface MyObject {
-    greet(str: string): string;
+export interface MyLibraryBinding {
+    greet(guestName: string): string;
     add(a: number, b: number): number;
 }
 
-export const MyObject: {
-    new(name: string): MyObject;
-} = addon.MyObject;
+export const MyLibraryBinding: {
+    new(name: string): MyLibraryBinding;
+} = addon.MyLibraryBinding;
+
+export interface NfcCppBinding {
+    connect(port: string): Promise<string>;
+}
+
+export const NfcCppBinding: {
+    new(): NfcCppBinding;
+} = addon.NfcCppBinding;

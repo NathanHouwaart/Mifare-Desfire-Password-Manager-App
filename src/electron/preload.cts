@@ -3,6 +3,7 @@ const electron = require('electron');
 electron.contextBridge.exposeInMainWorld("electron", {
     greet: (name: string) => ipcInvoke("greet", name),
     add: (a: number, b: number) => ipcInvoke("add", a, b),
+    connect: (port: string) => ipcInvoke("connect", port),
 } satisfies Window["electron"]);
 
 

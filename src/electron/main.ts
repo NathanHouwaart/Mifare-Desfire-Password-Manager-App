@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent } from 'electron'
 import { isDev } from './utils.js';
-import { MyObject } from './bindings.js';
+import { MyLibraryBinding, NfcCppBinding } from './bindings.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
 
 // Add global error handlers to catch crashes
@@ -37,15 +37,27 @@ app.on('ready', () => {
 });
 
 ipcMain.handle('greet', (event: IpcMainInvokeEvent, name: string) => {
-  const obj = new MyObject('Electron');
+  const obj = new MyLibraryBinding('Electron');
   const result = obj.greet(name);
   console.log('greet result:', result);
   return result;
 });
 
 ipcMain.handle('add', (event: IpcMainInvokeEvent, a: number, b: number) => {
-  const obj = new MyObject('Electron');
+  const obj = new MyLibraryBinding('Electron');
   const result = obj.add(a, b);
   console.log('add result:', result);
   return result;
+});
+
+ipcMain.handle('connect', async (event: IpcMainInvokeEvent, port: string) => {
+  const obj = new NfcCppBinding();
+  try {
+    const result = await obj.connect(port);
+    console.log('connect result:', result);
+    return result;
+  } catch (error) {
+    console.error('connect error:', error);
+    throw error;
+  }
 });

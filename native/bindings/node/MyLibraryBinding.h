@@ -4,9 +4,9 @@
 #include <memory>
 #include "MyLibrary.h"
 
-class MyObject : public Napi::ObjectWrap<MyObject> {
+class MyLibraryBinding : public Napi::ObjectWrap<MyLibraryBinding> {
 public:
-    MyObject(const Napi::CallbackInfo&);
+    MyLibraryBinding(const Napi::CallbackInfo&);
     Napi::Value Greet(const Napi::CallbackInfo&);
     Napi::Value Add(const Napi::CallbackInfo&);
 

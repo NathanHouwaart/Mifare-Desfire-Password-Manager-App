@@ -5,46 +5,67 @@ cmake_policy(SET CMP0042 NEW)
 project(myaddon VERSION 1.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 
-include_directories(${CMAKE_JS_INC})
-include_directories(${CMAKE_SOURCE_DIR}/node_modules/node-addon-api)
+if(MSVC)
+    add_compile_options(/MP)
+endif()
 
 add_definitions(-DNAPI_VERSION=9)
-include_directories(${CMAKE_JS_INC} "native" "native/MyLibrary/inc")
 
-file(GLOB_RECURSE ALL_ADDON_FILES
-    "${CMAKE_SOURCE_DIR}/native/*.c"
-    "${CMAKE_SOURCE_DIR}/native/*.cpp"
-    "${CMAKE_SOURCE_DIR}/native/*.cc"
-    "${CMAKE_SOURCE_DIR}/native/*.cxx"
-    "${CMAKE_SOURCE_DIR}/native/*.h"
-    "${CMAKE_SOURCE_DIR}/native/*.hpp"
-    "${CMAKE_SOURCE_DIR}/native/*.hh"
+# 1. External Libraries
+set(NFCCPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(NFCCPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(native/libs/NfcCpp)
+
+file(GLOB_RECURSE MYLIBRARY_FILES
+    "${CMAKE_SOURCE_DIR}/native/libs/MyLibrary/src/*.cpp"
+    "${CMAKE_SOURCE_DIR}/native/libs/MyLibrary/src/*.c"
 )
+add_library(MyLibrary STATIC ${MYLIBRARY_FILES})
+target_include_directories(MyLibrary PUBLIC "${CMAKE_SOURCE_DIR}/native/libs/MyLibrary/inc")
 
-# Filter out tests and example programs that may define their own main()
-set(SOURCE_FILES)
-foreach(_f ${ALL_ADDON_FILES})
-    get_filename_component(_name "${_f}" NAME)
-    if(_name MATCHES "^test\\.(c|cpp)$")
-        continue()
-    endif()
+# 2. Core Logic
+file(GLOB_RECURSE CORE_FILES
+    "${CMAKE_SOURCE_DIR}/native/core/services/*.cc"
+    "${CMAKE_SOURCE_DIR}/native/core/services/*.cpp"
+)
+add_library(core_lib STATIC ${CORE_FILES})
+target_include_directories(core_lib PUBLIC "${CMAKE_SOURCE_DIR}/native")
 
-    list(APPEND SOURCE_FILES ${_f})
-endforeach()
+# 3. Hardware Adapters
+file(GLOB_RECURSE ADAPTER_FILES
+    "${CMAKE_SOURCE_DIR}/native/adapters/hardware/*.cc"
+    "${CMAKE_SOURCE_DIR}/native/adapters/hardware/*.cpp"
+)
+add_library(hardware_adapter STATIC ${ADAPTER_FILES})
+target_include_directories(hardware_adapter PUBLIC 
+    "${CMAKE_SOURCE_DIR}/native"
+    "${CMAKE_SOURCE_DIR}/native/libs/NfcCpp/Include"
+    "${CMAKE_SOURCE_DIR}/native/libs/NfcCpp/external/etl/include"
+)
+target_link_libraries(hardware_adapter PUBLIC core_lib NfcCpp)
 
-add_library(${PROJECT_NAME} SHARED ${SOURCE_FILES} ${CMAKE_JS_SRC})
+# 4. Node Addon
+file(GLOB_RECURSE BINDING_FILES
+    "${CMAKE_SOURCE_DIR}/native/bindings/node/*.cc"
+    "${CMAKE_SOURCE_DIR}/native/bindings/node/*.cpp"
+    "${CMAKE_SOURCE_DIR}/native/RegisterModules.cc"
+)
+add_library(${PROJECT_NAME} SHARED ${BINDING_FILES} ${CMAKE_JS_SRC})
 set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "" SUFFIX ".node")
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_JS_INC}
     ${CMAKE_SOURCE_DIR}/node_modules/node-addon-api
     ${CMAKE_SOURCE_DIR}/native
-    ${CMAKE_SOURCE_DIR}/native/MyLibrary/inc
+    ${CMAKE_SOURCE_DIR}/native/libs/MyLibrary/inc
 )
 
 target_link_libraries(${PROJECT_NAME}
     PRIVATE
         ${CMAKE_JS_LIB}
+        core_lib
+        hardware_adapter
+        MyLibrary
 )
 
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

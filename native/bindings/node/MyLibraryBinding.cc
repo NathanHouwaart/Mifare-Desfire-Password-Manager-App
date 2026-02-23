@@ -1,8 +1,8 @@
-#include "MyObject.h"
+#include "MyLibraryBinding.h"
 
 using namespace Napi;
 
-MyObject::MyObject(const Napi::CallbackInfo& info)
+MyLibraryBinding::MyLibraryBinding(const Napi::CallbackInfo& info)
     : ObjectWrap(info)
 {
     Napi::Env env = info.Env();
@@ -18,7 +18,7 @@ MyObject::MyObject(const Napi::CallbackInfo& info)
     _actualClass = std::make_unique<MyLibrary>(name);
 }
 
-Napi::Value MyObject::Greet(const Napi::CallbackInfo& info)
+Napi::Value MyLibraryBinding::Greet(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
 
@@ -35,7 +35,7 @@ Napi::Value MyObject::Greet(const Napi::CallbackInfo& info)
     return Napi::String::New(env, result);
 }
 
-Napi::Value MyObject::Add(const Napi::CallbackInfo& info)
+Napi::Value MyLibraryBinding::Add(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
 
@@ -54,14 +54,14 @@ Napi::Value MyObject::Add(const Napi::CallbackInfo& info)
     return Napi::Number::New(env, sum);
 }
 
-Napi::Function MyObject::GetClass(Napi::Env env)
+Napi::Function MyLibraryBinding::GetClass(Napi::Env env)
 {
     return DefineClass(
         env,
-        "MyObject",
+        "MyLibraryBinding",
         {
-            InstanceMethod("greet", &MyObject::Greet),
-            InstanceMethod("add", &MyObject::Add)
+            InstanceMethod("greet", &MyLibraryBinding::Greet),
+            InstanceMethod("add", &MyLibraryBinding::Add)
         }
     );
 }

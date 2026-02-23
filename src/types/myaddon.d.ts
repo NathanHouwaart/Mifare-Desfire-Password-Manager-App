@@ -1,8 +1,12 @@
 declare module '../../build/myaddon.node' {
-  export class MyObject {
+  export class MyLibraryBinding {
     constructor(name: string);
     greet(str: string): string;
     add(a: number, b: number): number;
+  }
+  export class NfcCppBinding {
+    constructor();
+    connect(port: string): Promise<string>;
   }
 }
 

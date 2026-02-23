@@ -4,6 +4,7 @@ type RendererEvents = Record<string, never>;
 type IPCHandlers = {
   greet: (name: string) => Promise<string>;
   add: (a: number, b: number) => Promise<number>;
+  connect: (port: string) => Promise<string>;
 };
 
 // 2) helpers derived from IPCHandlers
