@@ -43,6 +43,36 @@ export interface NfcCppBinding {
     getFirmwareVersion(): Promise<string>;
     runSelfTests(onProgress?: (row: SelfTestResultDto) => void): Promise<SelfTestReportDto>;
     getCardVersion(): Promise<CardVersionInfoDto>;
+
+    // Password vault card operations
+    /** Returns null when no card is present; rejects on hardware errors. */
+    peekCardUid(): Promise<string | null>;
+    /** True if App AID 505700 is present on the card. */
+    isCardInitialised(): Promise<boolean>;
+    /** Single-scan probe: one InListPassiveTarget returning uid + isInitialised. */
+    probeCard(): Promise<{ uid: string | null; isInitialised: boolean }>;
+    /** Runs the 11-step secure init sequence. */
+    initCard(opts: CardInitOptsDto): Promise<boolean>;
+    /** Authenticates with readKey and returns the 16-byte card secret as a Buffer. */
+    readCardSecret(readKey: number[]): Promise<Buffer>;
+    /** Returns free EEPROM bytes remaining on the PICC. */
+    cardFreeMemory(): Promise<number>;
+    /** Runs FormatPICC — destroys all applications and files. */
+    formatCard(): Promise<boolean>;
+    /** Returns AIDs as uppercase hex strings, e.g. ["505700"]. */
+    getCardApplicationIds(): Promise<string[]>;
+}
+
+/** Options passed to initCard — all keys are raw AES-128 byte arrays. */
+export interface CardInitOptsDto {
+    /** 3-byte AID, e.g. [0x50, 0x57, 0x00] */
+    aid: number[];
+    /** 16-byte AES-128 app master key */
+    appMasterKey: number[];
+    /** 16-byte AES-128 read key (key slot 1) */
+    readKey: number[];
+    /** 16 random bytes written as the card secret */
+    cardSecret: number[];
 }
 
 export const NfcCppBinding: {

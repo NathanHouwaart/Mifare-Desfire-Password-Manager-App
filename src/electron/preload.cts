@@ -12,6 +12,25 @@ electron.contextBridge.exposeInMainWorld("electron", {
     getFirmwareVersion: () => ipcInvoke("getFirmwareVersion"),
     runSelfTests: () => ipcInvoke("runSelfTests"),
     getCardVersion: () => ipcInvoke("getCardVersion"),
+
+    // Card operations
+    'card:peekUid':       () => ipcInvoke('card:peekUid'),
+    'card:isInitialised': () => ipcInvoke('card:isInitialised'),
+    'card:probe':         () => ipcInvoke('card:probe'),
+    'card:init':          () => ipcInvoke('card:init'),
+    'card:freeMemory':    () => ipcInvoke('card:freeMemory'),
+    'card:format':        () => ipcInvoke('card:format'),
+    'card:getAids':       () => ipcInvoke('card:getAids'),
+
+    // Vault operations
+    'vault:listEntries':  (opts?: VaultListOptsDto) => ipcInvoke('vault:listEntries', opts),
+    'vault:getEntry':     (id: string) => ipcInvoke('vault:getEntry', id),
+    'vault:createEntry':  (params: EntryCreateDto) => ipcInvoke('vault:createEntry', params),
+    'vault:updateEntry':  (id: string, params: EntryUpdateDto) => ipcInvoke('vault:updateEntry', id, params),
+    'vault:deleteEntry':  (id: string) => ipcInvoke('vault:deleteEntry', id),
+
+    // Cancel any in-progress card-wait operation
+    'nfc:cancel': () => ipcInvoke('nfc:cancel'),
 } satisfies Window["electron"]);
 
 

@@ -1,3 +1,9 @@
+// NfcCppBinding.cc uses std::ostringstream / std::setw — add needed includes.
+// (sstream and iomanip are already pulled in transitively via Pn532Adapter;
+//  add them explicitly here for clarity.)
+#include <sstream>
+#include <iomanip>
+
 #include "NfcCppBinding.h"
 #include "../../adapters/hardware/Pn532Adapter.h"
 
@@ -292,6 +298,417 @@ Napi::Value NfcCppBinding::GetCardVersion(const Napi::CallbackInfo& info)
     return deferred.Promise();
 }
 
+// ─── PeekCardUid ──────────────────────────────────────────────────────────────
+
+class PeekCardUidWorker : public Napi::AsyncWorker {
+public:
+    PeekCardUidWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                      std::shared_ptr<core::services::NfcService> service)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)) {}
+
+    void Execute() override { _result = _service->peekCardUid(); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<std::vector<uint8_t>>(_result)) {
+            const auto& uid = std::get<std::vector<uint8_t>>(_result);
+            // Return colon-separated hex string, e.g. "04:A1:B2:C3:D4:E5:F6"
+            std::ostringstream ss;
+            ss << std::hex << std::uppercase;
+            for (size_t i = 0; i < uid.size(); ++i) {
+                if (i > 0) ss << ":";
+                ss << std::setw(2) << std::setfill('0') << static_cast<int>(uid[i]);
+            }
+            _deferred.Resolve(Napi::String::New(env, ss.str()));
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            if (nfcErr.code == "NO_CARD") {
+                _deferred.Resolve(env.Null());
+            } else {
+                auto err = Napi::Error::New(env, nfcErr.message);
+                err.Set("code", Napi::String::New(env, nfcErr.code));
+                _deferred.Reject(err.Value());
+            }
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    core::ports::Result<std::vector<uint8_t>> _result;
+};
+
+Napi::Value NfcCppBinding::PeekCardUid(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    PeekCardUidWorker* worker = new PeekCardUidWorker(env, deferred, _service);
+    worker->Queue();
+    return deferred.Promise();
+}
+
+// ─── IsCardInitialised ────────────────────────────────────────────────────────
+
+class IsCardInitialisedWorker : public Napi::AsyncWorker {
+public:
+    IsCardInitialisedWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                            std::shared_ptr<core::services::NfcService> service)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)) {}
+
+    void Execute() override { _result = _service->isCardInitialised(); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<bool>(_result)) {
+            _deferred.Resolve(Napi::Boolean::New(env, std::get<bool>(_result)));
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            auto err = Napi::Error::New(env, nfcErr.message);
+            err.Set("code", Napi::String::New(env, nfcErr.code));
+            _deferred.Reject(err.Value());
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    core::ports::Result<bool> _result;
+};
+
+Napi::Value NfcCppBinding::IsCardInitialised(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    IsCardInitialisedWorker* worker = new IsCardInitialisedWorker(env, deferred, _service);
+    worker->Queue();
+    return deferred.Promise();
+}
+
+// ─── ProbeCard ────────────────────────────────────────────────────────────────
+
+class ProbeCardWorker : public Napi::AsyncWorker {
+public:
+    ProbeCardWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                    std::shared_ptr<core::services::NfcService> service)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)) {}
+
+    void Execute() override { _result = _service->probeCard(); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<core::ports::CardProbeResult>(_result)) {
+            const auto& probe = std::get<core::ports::CardProbeResult>(_result);
+            Napi::Object obj = Napi::Object::New(env);
+
+            if (probe.uid.empty()) {
+                obj.Set("uid", env.Null());
+            } else {
+                std::ostringstream ss;
+                ss << std::hex << std::uppercase;
+                for (size_t i = 0; i < probe.uid.size(); ++i) {
+                    if (i > 0) ss << ":";
+                    ss << std::setw(2) << std::setfill('0') << static_cast<int>(probe.uid[i]);
+                }
+                obj.Set("uid", Napi::String::New(env, ss.str()));
+            }
+
+            obj.Set("isInitialised", Napi::Boolean::New(env, probe.isInitialised));
+            _deferred.Resolve(obj);
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            if (nfcErr.code == "NO_CARD") {
+                // No card present — resolve with null uid and false
+                Napi::Object obj = Napi::Object::New(env);
+                obj.Set("uid", env.Null());
+                obj.Set("isInitialised", Napi::Boolean::New(env, false));
+                _deferred.Resolve(obj);
+            } else {
+                auto err = Napi::Error::New(env, nfcErr.message);
+                err.Set("code", Napi::String::New(env, nfcErr.code));
+                _deferred.Reject(err.Value());
+            }
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    core::ports::Result<core::ports::CardProbeResult> _result;
+};
+
+Napi::Value NfcCppBinding::ProbeCard(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    ProbeCardWorker* worker = new ProbeCardWorker(env, deferred, _service);
+    worker->Queue();
+    return deferred.Promise();
+}
+
+// ─── InitCard ─────────────────────────────────────────────────────────────────
+
+class InitCardWorker : public Napi::AsyncWorker {
+public:
+    InitCardWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                   std::shared_ptr<core::services::NfcService> service,
+                   core::ports::CardInitOptions opts)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)),
+          _opts(opts) {}
+
+    void Execute() override { _result = _service->initCard(_opts); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<bool>(_result)) {
+            _deferred.Resolve(Napi::Boolean::New(env, std::get<bool>(_result)));
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            auto err = Napi::Error::New(env, nfcErr.message);
+            err.Set("code", Napi::String::New(env, nfcErr.code));
+            _deferred.Reject(err.Value());
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    core::ports::CardInitOptions _opts;
+    core::ports::Result<bool> _result;
+};
+
+// Helper: extract an N-byte std::array from a Napi::Array argument.
+template <size_t N>
+static std::array<uint8_t, N> napiArrayToStdArray(
+    Napi::Env env, const Napi::Array& arr, const char* fieldName) {
+    if (arr.Length() != N) {
+        throw Napi::TypeError::New(env,
+            std::string(fieldName) + " must be exactly " + std::to_string(N) + " bytes");
+    }
+    std::array<uint8_t, N> out;
+    for (size_t i = 0; i < N; ++i)
+        out[i] = static_cast<uint8_t>(arr.Get(i).As<Napi::Number>().Uint32Value());
+    return out;
+}
+
+Napi::Value NfcCppBinding::InitCard(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env, "Expected an options object").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Napi::Object opts = info[0].As<Napi::Object>();
+
+    core::ports::CardInitOptions cardOpts;
+    try {
+        cardOpts.aid          = napiArrayToStdArray<3> (env, opts.Get("aid").As<Napi::Array>(),          "aid");
+        cardOpts.appMasterKey = napiArrayToStdArray<16>(env, opts.Get("appMasterKey").As<Napi::Array>(), "appMasterKey");
+        cardOpts.readKey      = napiArrayToStdArray<16>(env, opts.Get("readKey").As<Napi::Array>(),      "readKey");
+        cardOpts.cardSecret   = napiArrayToStdArray<16>(env, opts.Get("cardSecret").As<Napi::Array>(),   "cardSecret");
+    } catch (const Napi::Error& e) {
+        e.ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    InitCardWorker* worker = new InitCardWorker(env, deferred, _service, cardOpts);
+    worker->Queue();
+    return deferred.Promise();
+}
+
+// ─── ReadCardSecret ───────────────────────────────────────────────────────────
+
+class ReadCardSecretWorker : public Napi::AsyncWorker {
+public:
+    ReadCardSecretWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                         std::shared_ptr<core::services::NfcService> service,
+                         std::array<uint8_t, 16> readKey)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)),
+          _readKey(readKey) {}
+
+    void Execute() override { _result = _service->readCardSecret(_readKey); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<std::vector<uint8_t>>(_result)) {
+            const auto& data = std::get<std::vector<uint8_t>>(_result);
+            _deferred.Resolve(Napi::Buffer<uint8_t>::Copy(
+                env, data.data(), data.size()));
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            auto err = Napi::Error::New(env, nfcErr.message);
+            err.Set("code", Napi::String::New(env, nfcErr.code));
+            _deferred.Reject(err.Value());
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    std::array<uint8_t, 16> _readKey;
+    core::ports::Result<std::vector<uint8_t>> _result;
+};
+
+Napi::Value NfcCppBinding::ReadCardSecret(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "Expected readKey as 16-element array").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    std::array<uint8_t, 16> readKey;
+    try {
+        readKey = napiArrayToStdArray<16>(env, info[0].As<Napi::Array>(), "readKey");
+    } catch (const Napi::Error& e) {
+        e.ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    ReadCardSecretWorker* worker = new ReadCardSecretWorker(env, deferred, _service, readKey);
+    worker->Queue();
+    return deferred.Promise();
+}
+
+// ─── CardFreeMemory ───────────────────────────────────────────────────────────
+
+class CardFreeMemoryWorker : public Napi::AsyncWorker {
+public:
+    CardFreeMemoryWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                         std::shared_ptr<core::services::NfcService> service)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)) {}
+
+    void Execute() override { _result = _service->cardFreeMemory(); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<uint32_t>(_result)) {
+            _deferred.Resolve(Napi::Number::New(env, std::get<uint32_t>(_result)));
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            auto err = Napi::Error::New(env, nfcErr.message);
+            err.Set("code", Napi::String::New(env, nfcErr.code));
+            _deferred.Reject(err.Value());
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    core::ports::Result<uint32_t> _result;
+};
+
+Napi::Value NfcCppBinding::CardFreeMemory(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    CardFreeMemoryWorker* worker = new CardFreeMemoryWorker(env, deferred, _service);
+    worker->Queue();
+    return deferred.Promise();
+}
+
+// ─── FormatCard ───────────────────────────────────────────────────────────────
+
+class FormatCardWorker : public Napi::AsyncWorker {
+public:
+    FormatCardWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                     std::shared_ptr<core::services::NfcService> service)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)) {}
+
+    void Execute() override { _result = _service->formatCard(); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<bool>(_result)) {
+            _deferred.Resolve(Napi::Boolean::New(env, std::get<bool>(_result)));
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            auto err = Napi::Error::New(env, nfcErr.message);
+            err.Set("code", Napi::String::New(env, nfcErr.code));
+            _deferred.Reject(err.Value());
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    core::ports::Result<bool> _result;
+};
+
+Napi::Value NfcCppBinding::FormatCard(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    FormatCardWorker* worker = new FormatCardWorker(env, deferred, _service);
+    worker->Queue();
+    return deferred.Promise();
+}
+
+// ─── GetCardApplicationIds ────────────────────────────────────────────────────
+
+class GetCardApplicationIdsWorker : public Napi::AsyncWorker {
+public:
+    GetCardApplicationIdsWorker(Napi::Env& env, Napi::Promise::Deferred deferred,
+                                std::shared_ptr<core::services::NfcService> service)
+        : Napi::AsyncWorker(env), _deferred(deferred), _service(std::move(service)) {}
+
+    void Execute() override { _result = _service->getCardApplicationIds(); }
+
+    void OnOK() override {
+        Napi::Env env = Env();
+        if (std::holds_alternative<std::vector<std::array<uint8_t, 3>>>(_result)) {
+            const auto& aids = std::get<std::vector<std::array<uint8_t, 3>>>(_result);
+            Napi::Array arr = Napi::Array::New(env, aids.size());
+            for (size_t i = 0; i < aids.size(); ++i) {
+                // Return each AID as uppercase hex string, e.g. "505700"
+                std::ostringstream ss;
+                ss << std::hex << std::uppercase << std::setfill('0');
+                for (auto b : aids[i]) ss << std::setw(2) << static_cast<int>(b);
+                arr.Set(i, Napi::String::New(env, ss.str()));
+            }
+            _deferred.Resolve(arr);
+        } else {
+            const auto& nfcErr = std::get<core::ports::NfcError>(_result);
+            auto err = Napi::Error::New(env, nfcErr.message);
+            err.Set("code", Napi::String::New(env, nfcErr.code));
+            _deferred.Reject(err.Value());
+        }
+    }
+
+    void OnError(const Napi::Error& e) override { _deferred.Reject(e.Value()); }
+
+private:
+    Napi::Promise::Deferred _deferred;
+    std::shared_ptr<core::services::NfcService> _service;
+    core::ports::Result<std::vector<std::array<uint8_t, 3>>> _result;
+};
+
+Napi::Value NfcCppBinding::GetCardApplicationIds(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Promise::Deferred deferred = Napi::Promise::Deferred::New(env);
+    GetCardApplicationIdsWorker* worker = new GetCardApplicationIdsWorker(env, deferred, _service);
+    worker->Queue();
+    return deferred.Promise();
+}
+
 Napi::Value NfcCppBinding::Disconnect(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -353,12 +770,20 @@ Napi::Function NfcCppBinding::GetClass(Napi::Env env)
         env,
         "NfcCppBinding",
         {
-            InstanceMethod("connect",            &NfcCppBinding::Connect),
-            InstanceMethod("disconnect",         &NfcCppBinding::Disconnect),
-            InstanceMethod("setLogCallback",     &NfcCppBinding::SetLogCallback),
-            InstanceMethod("getFirmwareVersion", &NfcCppBinding::GetFirmwareVersion),
-            InstanceMethod("runSelfTests",       &NfcCppBinding::RunSelfTests),
-            InstanceMethod("getCardVersion",     &NfcCppBinding::GetCardVersion),
+            InstanceMethod("connect",                &NfcCppBinding::Connect),
+            InstanceMethod("disconnect",             &NfcCppBinding::Disconnect),
+            InstanceMethod("setLogCallback",         &NfcCppBinding::SetLogCallback),
+            InstanceMethod("getFirmwareVersion",     &NfcCppBinding::GetFirmwareVersion),
+            InstanceMethod("runSelfTests",           &NfcCppBinding::RunSelfTests),
+            InstanceMethod("getCardVersion",         &NfcCppBinding::GetCardVersion),
+            InstanceMethod("peekCardUid",            &NfcCppBinding::PeekCardUid),
+            InstanceMethod("isCardInitialised",      &NfcCppBinding::IsCardInitialised),
+            InstanceMethod("probeCard",              &NfcCppBinding::ProbeCard),
+            InstanceMethod("initCard",               &NfcCppBinding::InitCard),
+            InstanceMethod("readCardSecret",         &NfcCppBinding::ReadCardSecret),
+            InstanceMethod("cardFreeMemory",         &NfcCppBinding::CardFreeMemory),
+            InstanceMethod("formatCard",             &NfcCppBinding::FormatCard),
+            InstanceMethod("getCardApplicationIds",  &NfcCppBinding::GetCardApplicationIds),
         }
     );
 }

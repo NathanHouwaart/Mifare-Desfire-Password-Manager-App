@@ -15,6 +15,16 @@ public:
     Napi::Value RunSelfTests(const Napi::CallbackInfo&);
     Napi::Value GetCardVersion(const Napi::CallbackInfo&);
 
+    // Password vault card operations
+    Napi::Value PeekCardUid(const Napi::CallbackInfo&);
+    Napi::Value IsCardInitialised(const Napi::CallbackInfo&);
+    Napi::Value ProbeCard(const Napi::CallbackInfo&);
+    Napi::Value InitCard(const Napi::CallbackInfo&);
+    Napi::Value ReadCardSecret(const Napi::CallbackInfo&);
+    Napi::Value CardFreeMemory(const Napi::CallbackInfo&);
+    Napi::Value FormatCard(const Napi::CallbackInfo&);
+    Napi::Value GetCardApplicationIds(const Napi::CallbackInfo&);
+
     static Napi::Function GetClass(Napi::Env);
 
 private:

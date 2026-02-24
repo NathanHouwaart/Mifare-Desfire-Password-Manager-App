@@ -1,26 +1,23 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
   Search, Plus, Eye, EyeOff, Copy, Check,
   KeyRound, Trash2, Pencil, X, RefreshCw, ArrowUpDown,
-  Shield,
+  Shield, AlertCircle, Loader2,
 } from 'lucide-react';
+import { TapCardOverlay } from '../Components/TapCardOverlay';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface PasswordEntry {
-  id: string;
-  service: string;
-  username: string;
-  password: string;
-  description: string;
-  category: string;
-  createdAt: number;
-  updatedAt: number;
+interface ModalFormEntry {
+  service:     string;   // → label
+  url:         string;
+  username:    string;
+  password:    string;
+  description: string;   // → notes
+  category:    string;
 }
 
-interface ModalEntry { service: string; username: string; password: string; description: string; category: string; }
-
-type SortKey = 'name-asc' | 'name-desc' | 'username' | 'newest' | 'oldest';
+type SortKey = 'name-asc' | 'name-desc' | 'newest' | 'oldest';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -41,7 +38,9 @@ function avatarGradient(service: string): string {
   return AVATAR_GRADIENTS[hash % AVATAR_GRADIENTS.length];
 }
 
-function genId(): string { return Math.random().toString(36).slice(2, 10); }
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 function genPassword(): string {
   const pool = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
@@ -53,7 +52,6 @@ function genPassword(): string {
 const SORT_LABELS: Record<SortKey, string> = {
   'name-asc':  'Name (A-Z)',
   'name-desc': 'Name (Z-A)',
-  'username':  'Username',
   'newest':    'Newest',
   'oldest':    'Oldest',
 };
@@ -103,17 +101,6 @@ const ROW_GRID =
   'sm:grid-cols-[2.5rem_minmax(0,2fr)_minmax(0,1.5fr)_12rem] sm:gap-x-5 ' +
   'md:grid-cols-[2.5rem_minmax(0,2fr)_minmax(0,1.5fr)_5.5rem_12rem] md:gap-x-6';
 
-// Placeholder data — will be replaced by C++ DESFire storage
-const INITIAL_PASSWORDS: PasswordEntry[] = [
-  { id: genId(), service: 'GitHub',  username: 'nathandev',        password: 'Gh!x9#mK2pLq',  description: 'Personal dev account',    category: 'Development', createdAt: Date.now() - 86400000 * 5,  updatedAt: Date.now() - 86400000 * 1  },
-  { id: genId(), service: 'Google',  username: 'nathan@gmail.com', password: 'G00gl3$ecure!', description: 'Main Google account',     category: 'Email',       createdAt: Date.now() - 86400000 * 3,  updatedAt: Date.now() - 86400000 * 3  },
-  { id: genId(), service: 'Discord', username: 'NathanDev#4421',   password: 'Disc0rd@pass',   description: 'Gaming + dev communities', category: 'Gaming',      createdAt: Date.now() - 86400000 * 2,  updatedAt: Date.now() - 86400000 * 2  },
-  { id: genId(), service: 'Netflix', username: 'nathan@gmail.com', password: 'Netfl!x2024#',  description: 'Family streaming plan',   category: 'Social',      createdAt: Date.now() - 86400000 * 1,  updatedAt: Date.now()                  },
-  { id: genId(), service: 'AWS',     username: 'nathan.admin',     password: 'Aws!K9mP#3xZ',  description: 'Production AWS account',  category: 'Work',        createdAt: Date.now() - 86400000 * 10, updatedAt: Date.now() - 86400000 * 7  },
-  { id: genId(), service: 'Spotify', username: 'nathandev',        password: 'Spot!fy#88mz',  description: 'Music + podcasts',        category: 'Social',      createdAt: Date.now() - 86400000 * 7,  updatedAt: Date.now() - 86400000 * 5  },
-  { id: genId(), service: 'Twitter', username: '@nathandev',       password: 'Tw!tter#2024',  description: 'Dev & tech updates',      category: 'Social',      createdAt: Date.now() - 86400000 * 4,  updatedAt: Date.now() - 86400000 * 4  },
-];
-
 // ── Shared primitives ────────────────────────────────────────────────────────
 
 const INPUT_CLS =
@@ -152,26 +139,34 @@ const ActionBtn = ({
 const EntryModal = ({
   initial, onSave, onClose,
 }: {
-  initial: PasswordEntry | null;
-  onSave: (data: ModalEntry) => void;
+  initial: ModalFormEntry | null;
+  onSave: (data: ModalFormEntry) => Promise<void>;
   onClose: () => void;
 }) => {
-  const [form, setForm] = useState<ModalEntry>(
-    initial
-      ? { service: initial.service, username: initial.username, password: initial.password, description: initial.description, category: initial.category }
-      : { service: '', username: '', password: '', description: '', category: '' },
+  const [form, setForm] = useState<ModalFormEntry>(
+    initial ?? { service: '', url: '', username: '', password: '', description: '', category: '' },
   );
-  const [showPw, setShowPw] = useState(false);
+  const [showPw,  setShowPw]  = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
 
-  const set = (k: keyof ModalEntry) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
-    setForm(f => ({ ...f, [k]: e.target.value }));
+  const set = (k: keyof ModalFormEntry) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+      setForm(f => ({ ...f, [k]: e.target.value }));
 
   const valid = form.service.trim() && form.username.trim() && form.password.trim();
+
+  const handleSubmit = async () => {
+    if (!valid) return;
+    setSaving(true); setSaveErr(null);
+    try { await onSave(form); }
+    catch (err) { setSaveErr(err instanceof Error ? err.message : String(err)); setSaving(false); }
+  };
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={e => { if (e.target === e.currentTarget && !saving) onClose(); }}
     >
       <div className="bg-card border border-edge rounded-2xl w-full max-w-md shadow-2xl
                       animate-[fadeSlideUp_0.2s_ease-out]">
@@ -180,28 +175,33 @@ const EntryModal = ({
             {initial ? 'Edit Entry' : 'New Entry'}
           </h2>
           <button
-            onClick={onClose}
+            onClick={onClose} disabled={saving}
             className="w-8 h-8 rounded-lg flex items-center justify-center text-dim
-                       hover:text-hi hover:bg-input active:scale-90 transition-all duration-100"
+                       hover:text-hi hover:bg-input active:scale-90 transition-all duration-100
+                       disabled:opacity-40"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="px-6 py-5 flex flex-col gap-4">
-          <Field label="Service / Website">
+        <div className="px-6 py-5 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
+          <Field label="Service / Website *">
             <input value={form.service} onChange={set('service')} placeholder="e.g. GitHub"
-                   className={INPUT_CLS} />
+                   disabled={saving} className={INPUT_CLS} />
           </Field>
-          <Field label="Username / Email">
+          <Field label="URL">
+            <input value={form.url} onChange={set('url')} placeholder="e.g. https://github.com"
+                   disabled={saving} className={INPUT_CLS} />
+          </Field>
+          <Field label="Username / Email *">
             <input value={form.username} onChange={set('username')} placeholder="e.g. user@example.com"
-                   className={INPUT_CLS} />
+                   disabled={saving} className={INPUT_CLS} />
           </Field>
-          <Field label="Password">
+          <Field label="Password *">
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <input value={form.password} onChange={set('password')}
                        type={showPw ? 'text' : 'password'} placeholder="••••••••••••"
-                       className={`${INPUT_CLS} pr-11 font-mono`} />
+                       disabled={saving} className={`${INPUT_CLS} pr-11 font-mono`} />
                 <button
                   onClick={() => setShowPw(p => !p)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-dim
@@ -212,46 +212,55 @@ const EntryModal = ({
               </div>
               <button
                 onClick={() => setForm(f => ({ ...f, password: genPassword() }))}
-                title="Generate password"
+                title="Generate password" disabled={saving}
                 className="px-3.5 rounded-xl bg-input border border-edge text-dim
                            hover:text-accent hover:border-accent-edge
-                           active:scale-95 transition-all duration-100"
+                           active:scale-95 transition-all duration-100 disabled:opacity-40"
               >
                 <RefreshCw className="w-4 h-4" />
               </button>
             </div>
           </Field>
-          <Field label="Description (optional)">
+          <Field label="Notes">
             <textarea
               value={form.description}
               onChange={set('description')}
               placeholder="e.g. Personal dev account, 2FA enabled"
-              rows={2}
+              rows={2} disabled={saving}
               className={`${INPUT_CLS} resize-none`}
             />
           </Field>
           <Field label="Category">
             <select
               value={form.category}
-              onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
+              onChange={set('category')}
+              disabled={saving}
               className={INPUT_CLS}
             >
               <option value="">— Uncategorized —</option>
               {CATEGORY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </Field>
+          {saveErr && (
+            <div className="flex items-start gap-2 rounded-xl bg-err-soft border border-err-edge p-3">
+              <AlertCircle className="w-4 h-4 text-err shrink-0 mt-0.5" />
+              <p className="text-[13px] text-err">{saveErr}</p>
+            </div>
+          )}
         </div>
         <div className="flex gap-3 px-6 pb-5">
-          <button onClick={onClose}
+          <button onClick={onClose} disabled={saving}
                   className="flex-1 py-3 rounded-xl text-[16px] font-medium text-lo
                              bg-input border border-edge hover:text-hi
-                             active:scale-[0.98] transition-all duration-100">
+                             active:scale-[0.98] transition-all duration-100 disabled:opacity-40">
             Cancel
           </button>
-          <button onClick={() => valid && onSave(form)} disabled={!valid}
+          <button onClick={handleSubmit} disabled={!valid || saving}
                   className="flex-1 py-3 rounded-xl text-[16px] font-medium text-white
                              bg-accent-solid hover:bg-accent-hover disabled:opacity-40
-                             disabled:cursor-not-allowed active:scale-[0.98] transition-all duration-100">
+                             disabled:cursor-not-allowed active:scale-[0.98] transition-all duration-100
+                             flex items-center justify-center gap-2">
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
             {initial ? 'Save Changes' : 'Add Entry'}
           </button>
         </div>
@@ -265,7 +274,7 @@ const EntryModal = ({
 const DeleteDialog = ({
   entry, onConfirm, onClose,
 }: {
-  entry: PasswordEntry; onConfirm: () => void; onClose: () => void;
+  entry: EntryListItemDto; onConfirm: () => void; onClose: () => void;
 }) => (
   <div
     className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
@@ -280,7 +289,7 @@ const DeleteDialog = ({
       <div>
         <h2 className="text-[18px] font-semibold text-hi">Delete Entry?</h2>
         <p className="text-[15px] text-lo mt-1 leading-relaxed">
-          Remove <span className="text-hi font-medium">{entry.service}</span> from your vault?
+          Remove <span className="text-hi font-medium">{entry.label}</span> from your vault?
           This cannot be undone.
         </p>
       </div>
@@ -304,192 +313,320 @@ const DeleteDialog = ({
 // ── Password Row ─────────────────────────────────────────────────────────────
 
 interface PasswordCardProps {
-  entry: PasswordEntry;
-  revealDuration: number;
-  copiedId: string | null;
-  onCopied: (id: string) => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  theme: 'dark' | 'light';
+  entry:          EntryListItemDto;
+  decrypted:      EntryPayloadDto | null;
+  isRevealed:     boolean;
+  copiedId:       string | null;
+  onRevealToggle: () => void;
+  onCopyClick:    () => void;
+  onEdit:         () => void;
+  onDelete:       () => void;
+  theme:          'dark' | 'light';
 }
 
 const PasswordCard = ({
-  entry, revealDuration, copiedId, onCopied, onEdit, onDelete, theme,
-}: PasswordCardProps) => {
-  const [revealed, setRevealed] = useState(false);
-  const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  entry, decrypted, isRevealed, copiedId,
+  onRevealToggle, onCopyClick, onEdit, onDelete, theme,
+}: PasswordCardProps) => (
+  <div className="border-b border-edge last:border-b-0 hover:bg-input transition-colors duration-100">
 
-  const startReveal = () => {
-    if (revealed) {
-      if (revealTimer.current) clearTimeout(revealTimer.current);
-      setRevealed(false);
-      return;
-    }
-    setRevealed(true);
-    if (revealDuration > 0) {
-      if (revealTimer.current) clearTimeout(revealTimer.current);
-      revealTimer.current = setTimeout(() => setRevealed(false), revealDuration * 1000);
-    }
-  };
+    {/* ── Main row ── */}
+    <div className={`${ROW_GRID} px-5 py-4`}>
 
-  // Clear any running timer when this row unmounts
-  useEffect(() => () => { if (revealTimer.current) clearTimeout(revealTimer.current); }, []);
-
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(entry.password);
-    onCopied(entry.id);
-  };
-
-  return (
-    <div className="border-b border-edge last:border-b-0 hover:bg-input transition-colors duration-100">
-
-      {/* ── Main row ── */}
-      <div className={`${ROW_GRID} px-5 py-4`}>
-
-        {/* Avatar */}
-        <div
-          className={`w-10 h-10 rounded-xl bg-gradient-to-br ${avatarGradient(entry.service)}
-                      flex items-center justify-center text-[15px] font-bold text-white`}
-        >
-          {entry.service[0]?.toUpperCase() ?? '?'}
-        </div>
-
-        {/* Service + Description + Category tag */}
-        <div className="min-w-0">
-          <p className="text-[17px] font-semibold text-hi truncate leading-tight">{entry.service}</p>
-          {entry.description
-            ? <p className="text-[13px] text-lo truncate mt-0.5 leading-snug">{entry.description}</p>
-            : <p className="text-[13px] text-dim truncate mt-0.5 italic leading-snug">No description</p>
-          }
-          {entry.category && (
-            <span className={`inline-flex items-center mt-1.5 border rounded px-1.5 py-0.5
-                              text-[11px] font-semibold uppercase tracking-wide
-                              ${categoryColor(entry.category, theme)}`}>
-              {entry.category}
-            </span>
-          )}
-        </div>
-
-        {/* Username */}
-        <div className="min-w-0 hidden sm:block">
-          <span
-            className="inline-flex items-center bg-input border border-edge rounded-md
-                       px-2 py-0.5 max-w-full"
-            title={entry.username}
-          >
-            <span className="text-[15px] text-mid font-medium truncate">{entry.username}</span>
-          </span>
-        </div>
-
-        {/* Last Edited */}
-        <div className="hidden md:block">
-          <p className="text-[14px] text-mid">{formatDate(entry.updatedAt)}</p>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center gap-0.5 justify-end">
-          <button
-            onClick={startReveal}
-            aria-label={revealed ? 'Hide password' : 'Show password'}
-            aria-pressed={revealed}
-            title={revealed ? 'Hide password' : 'Show password'}
-            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-100
-                        active:scale-90 focus-visible:outline-none focus-visible:ring-2
-                        focus-visible:ring-accent-edge
-                        ${revealed
-                          ? 'text-accent bg-accent-soft'
-                          : 'text-mid hover:text-hi hover:bg-well'}`}
-          >
-            {revealed ? <EyeOff className="w-[17px] h-[17px]" /> : <Eye className="w-[17px] h-[17px]" />}
-          </button>
-
-          <button
-            onClick={handleCopy}
-            aria-label={copiedId === entry.id ? 'Password copied' : 'Copy password'}
-            title={copiedId === entry.id ? 'Password copied' : 'Copy password'}
-            className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-100
-                        active:scale-90 focus-visible:outline-none focus-visible:ring-2
-                        focus-visible:ring-accent-edge
-                        ${copiedId === entry.id
-                          ? 'text-ok bg-ok-soft'
-                          : 'text-mid hover:text-hi hover:bg-well'}`}
-          >
-            {copiedId === entry.id
-              ? <Check className="w-[17px] h-[17px]" />
-              : <Copy  className="w-[17px] h-[17px]" />}
-          </button>
-          {copiedId === entry.id && (
-            <span className="text-[12px] text-ok font-semibold shrink-0
-                             animate-[fadeSlideUp_0.15s_ease-out]">Copied!</span>
-          )}
-
-          <ActionBtn onClick={onEdit} title="Edit entry">
-            <Pencil className="w-[17px] h-[17px]" />
-          </ActionBtn>
-          <ActionBtn onClick={onDelete} title="Delete entry" danger>
-            <Trash2 className="w-[17px] h-[17px]" />
-          </ActionBtn>
-        </div>
+      {/* Avatar */}
+      <div
+        className={`w-10 h-10 rounded-xl bg-gradient-to-br ${avatarGradient(entry.label)}
+                    flex items-center justify-center text-[15px] font-bold text-white shrink-0`}
+      >
+        {entry.label[0]?.toUpperCase() ?? '?'}
       </div>
 
-      {/* ── Revealed password — full width below the row ── */}
-      {revealed && (
-        <div
-          className="px-5 pb-4 animate-[fadeSlideUp_0.15s_ease-out]"
-          aria-live="polite"
-          aria-label="Revealed password"
-        >
-          <div className="flex items-center gap-3 bg-well border border-accent-edge rounded-xl px-4 py-3">
-            <p className="font-mono text-[14px] text-hi select-all flex-1 break-all">
-              {entry.password}
-            </p>
-            {copiedId === entry.id && (
-              <span className="text-[12px] text-ok font-semibold shrink-0
-                               animate-[fadeSlideUp_0.15s_ease-out]">Copied!</span>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Label + URL + Category */}
+      <div className="min-w-0">
+        <p className="text-[17px] font-semibold text-hi truncate leading-tight">{entry.label}</p>
+        {entry.url
+          ? <p className="text-[13px] text-lo truncate mt-0.5 leading-snug">{entry.url}</p>
+          : <p className="text-[13px] text-dim truncate mt-0.5 italic leading-snug">No URL</p>
+        }
+        {entry.category && (
+          <span className={`inline-flex items-center mt-1.5 border rounded px-1.5 py-0.5
+                            text-[11px] font-semibold uppercase tracking-wide
+                            ${categoryColor(entry.category, theme)}`}>
+            {entry.category}
+          </span>
+        )}
+      </div>
 
+      {/* Username — masked until decrypted */}
+      <div className="min-w-0 hidden sm:block">
+        <span
+          className="inline-flex items-center bg-input border border-edge rounded-md
+                     px-2 py-0.5 max-w-full"
+          title={decrypted ? decrypted.username : 'Tap card to view'}
+        >
+          <span className={`text-[15px] font-medium truncate ${decrypted ? 'text-mid' : 'text-dim italic'}`}>
+            {decrypted ? decrypted.username : 'Tap to view'}
+          </span>
+        </span>
+      </div>
+
+      {/* Last edited */}
+      <div className="hidden md:block">
+        <p className="text-[14px] text-mid">{formatDate(entry.updatedAt)}</p>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-0.5 justify-end">
+        <button
+          onClick={onRevealToggle}
+          aria-label={isRevealed ? 'Hide password' : 'Show password'}
+          aria-pressed={isRevealed}
+          title={isRevealed ? 'Hide password' : 'Show password'}
+          className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-100
+                      active:scale-90 focus-visible:outline-none focus-visible:ring-2
+                      focus-visible:ring-accent-edge
+                      ${isRevealed
+                        ? 'text-accent bg-accent-soft'
+                        : 'text-mid hover:text-hi hover:bg-well'}`}
+        >
+          {isRevealed ? <EyeOff className="w-[17px] h-[17px]" /> : <Eye className="w-[17px] h-[17px]" />}
+        </button>
+
+        <button
+          onClick={onCopyClick}
+          aria-label={copiedId === entry.id ? 'Password copied' : 'Copy password'}
+          title={copiedId === entry.id ? 'Password copied' : 'Copy password'}
+          className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-100
+                      active:scale-90 focus-visible:outline-none focus-visible:ring-2
+                      focus-visible:ring-accent-edge
+                      ${copiedId === entry.id
+                        ? 'text-ok bg-ok-soft'
+                        : 'text-mid hover:text-hi hover:bg-well'}`}
+        >
+          {copiedId === entry.id
+            ? <Check className="w-[17px] h-[17px]" />
+            : <Copy  className="w-[17px] h-[17px]" />}
+        </button>
+        {copiedId === entry.id && (
+          <span className="text-[12px] text-ok font-semibold shrink-0
+                           animate-[fadeSlideUp_0.15s_ease-out]">Copied!</span>
+        )}
+
+        <ActionBtn onClick={onEdit}   title="Edit entry"><Pencil className="w-[17px] h-[17px]" /></ActionBtn>
+        <ActionBtn onClick={onDelete} title="Delete entry" danger><Trash2 className="w-[17px] h-[17px]" /></ActionBtn>
+      </div>
     </div>
-  );
-};
+
+    {/* ── Revealed credentials panel ── */}
+    {isRevealed && decrypted && (
+      <div className="px-5 pb-4 animate-[fadeSlideUp_0.15s_ease-out]" aria-live="polite">
+        <div className="flex flex-col gap-2 bg-well border border-accent-edge rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-lo font-semibold w-20 shrink-0">USERNAME</span>
+            <p className="font-mono text-[14px] text-hi select-all flex-1 break-all">{decrypted.username}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[12px] text-lo font-semibold w-20 shrink-0">PASSWORD</span>
+            <p className="font-mono text-[14px] text-hi select-all flex-1 break-all">{decrypted.password}</p>
+          </div>
+          {decrypted.notes && (
+            <div className="flex items-start gap-2 pt-1 border-t border-edge mt-1">
+              <span className="text-[12px] text-lo font-semibold w-20 shrink-0 mt-px">NOTES</span>
+              <p className="text-[14px] text-mid flex-1 whitespace-pre-wrap">{decrypted.notes}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+);
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) => {
-  const [entries,        setEntries]        = useState<PasswordEntry[]>(INITIAL_PASSWORDS);
+  const [entries,        setEntries]        = useState<EntryListItemDto[]>([]);
+  const [loading,        setLoading]        = useState(true);
+  const [loadError,      setLoadError]      = useState<string | null>(null);
+
+  const [revealedPayload, setRevealedPayload] = useState<EntryPayloadDto | null>(null);
+  const [revealedId,      setRevealedId]      = useState<string | null>(null);
+  const [copiedId,       setCopiedId]       = useState<string | null>(null);
+
   const [search,         setSearch]         = useState('');
   const [sort,           setSort]           = useState<SortKey>('name-asc');
   const [categoryFilter, setCategoryFilter] = useState('All');
-  const [copiedId,       setCopiedId]       = useState<string | null>(null);
-  const [editTarget,   setEditTarget]   = useState<PasswordEntry | 'new' | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<PasswordEntry | null>(null);
 
-  // Read reveal duration once on page mount so each card row doesn't hit localStorage on every click
+  const [tapOverlay,  setTapOverlay]  = useState<{ label: string } | null>(null);
+  const [tapError,    setTapError]    = useState<string | null>(null);
+
+  const [editTarget,   setEditTarget]   = useState<
+    'new' | { entry: EntryListItemDto; decrypted: EntryPayloadDto } | null
+  >(null);
+  const [deleteTarget, setDeleteTarget] = useState<EntryListItemDto | null>(null);
+
   const revealDuration = useMemo(
     () => parseInt(localStorage.getItem('setting-reveal-duration') ?? '5', 10),
     [],
   );
 
+  const cancelRef = useRef(false);
+
+  // ── Load entries on mount ────────────────────────────────────────────────
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true); setLoadError(null);
+      try {
+        const list = await window.electron['vault:listEntries']();
+        setEntries(list);
+      } catch (err) { setLoadError(errMsg(err)); }
+      finally { setLoading(false); }
+    };
+    load();
+  }, []);
+
+  // ── Auto-hide revealed entry ─────────────────────────────────────────────
+  // When the timer fires, clear both the revealed state AND the decrypted
+  // payload so the next reveal always requires a fresh card tap.
+  useEffect(() => {
+    if (!revealedId || revealDuration <= 0) return;
+    const t = setTimeout(() => {
+      setRevealedId(null);
+      setRevealedPayload(null);
+    }, revealDuration * 1000);
+    return () => clearTimeout(t);
+  }, [revealedId, revealDuration]);
+
+  // ── withTap ─────────────────────────────────────────────────────────────
+  const withTap = useCallback(async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
+    cancelRef.current = false;
+    setTapOverlay({ label });
+    setTapError(null);
+    try { return await fn(); }
+    catch (err) {
+      if (!cancelRef.current) setTapError(errMsg(err));
+      throw err;
+    } finally { setTapOverlay(null); }
+  }, []);
+
+  const handleCancelTap = useCallback(() => {
+    cancelRef.current = true;
+    setTapOverlay(null);
+    // Tell the main process to stop the polling loop immediately so it does
+    // not keep firing InListPassiveTarget commands until PROBE_TIMEOUT_MS.
+    window.electron['nfc:cancel']().catch(() => {});
+  }, []);
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  const refreshEntries = useCallback(async () => {
+    const list = await window.electron['vault:listEntries']();
+    setEntries(list);
+  }, []);
+
+  // ── Reveal toggle ────────────────────────────────────────────────────────
+  // Always require a card tap to reveal — even if this entry was previously
+  // shown. Hiding clears the decrypted payload so it cannot be re-shown
+  // without another tap.
+  const handleRevealToggle = useCallback(async (entry: EntryListItemDto) => {
+    if (revealedId === entry.id) {
+      setRevealedId(null);
+      setRevealedPayload(null);
+      return;
+    }
+    try {
+      await withTap(`to reveal "${entry.label}"`, async () => {
+        const payload = await window.electron['vault:getEntry'](entry.id);
+        setRevealedPayload(payload);
+        setRevealedId(entry.id);
+      });
+    } catch { /* tapError already set */ }
+  }, [revealedId, withTap]);
+
+  // ── Copy ─────────────────────────────────────────────────────────────────
+  // Copy is free only while the entry is already revealed (no card removed
+  // between reveal and copy). Any other copy requires a card tap; the
+  // retrieved plaintext is used once and not stored.
+  const handleCopyClick = useCallback(async (entry: EntryListItemDto) => {
+    let payload: EntryPayloadDto | null =
+      revealedId === entry.id ? revealedPayload : null;
+    if (!payload) {
+      try {
+        await withTap(`to copy password for "${entry.label}"`, async () => {
+          payload = await window.electron['vault:getEntry'](entry.id);
+        });
+      } catch { return; }
+    }
+    if (payload) {
+      await navigator.clipboard.writeText(payload.password);
+      setCopiedId(entry.id);
+      setTimeout(() => setCopiedId(null), 1500);
+    }
+  }, [revealedId, revealedPayload, withTap]);
+
+  // ── Edit (always requires a card tap) ───────────────────────────────────
+  const handleEdit = useCallback(async (entry: EntryListItemDto) => {
+    let decrypted: EntryPayloadDto | undefined;
+    try {
+      await withTap(`to decrypt "${entry.label}"`, async () => {
+        decrypted = await window.electron['vault:getEntry'](entry.id);
+      });
+    } catch { return; }
+    if (decrypted) setEditTarget({ entry, decrypted });
+  }, [withTap]);
+
+  // ── Save (second tap) ────────────────────────────────────────────────────
+  const handleSave = useCallback(async (form: ModalFormEntry) => {
+    if (editTarget === 'new') {
+      const data: EntryCreateDto = {
+        label: form.service, url: form.url, username: form.username,
+        password: form.password, notes: form.description, category: form.category,
+      };
+      await withTap(`to add "${form.service}"`, async () => {
+        await window.electron['vault:createEntry'](data);
+        await refreshEntries();
+      });
+    } else if (editTarget) {
+      const entryId = editTarget.entry.id;
+      const data: EntryUpdateDto = {
+        label: form.service, url: form.url, username: form.username,
+        password: form.password, notes: form.description, category: form.category,
+      };
+      await withTap(`to save "${form.service}"`, async () => {
+        await window.electron['vault:updateEntry'](entryId, data);
+        await refreshEntries();
+      });
+    }
+    setEditTarget(null);
+  }, [editTarget, withTap, refreshEntries]);
+
+  // ── Delete (no card needed) ──────────────────────────────────────────────
+  const handleDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    const id = deleteTarget.id;
+    setDeleteTarget(null);
+    try {
+      await window.electron['vault:deleteEntry'](id);
+      setEntries(prev => prev.filter(e => e.id !== id));
+      if (revealedId === id) { setRevealedId(null); setRevealedPayload(null); }
+    } catch (err) { setTapError(errMsg(err)); }
+  }, [deleteTarget, revealedId]);
+
+  // ── Derived ──────────────────────────────────────────────────────────────
   const categories = useMemo(() => {
-    const cats = [...new Set(entries.map(e => e.category).filter(Boolean))].sort() as string[];
+    const cats = [...new Set(entries.map(e => e.category).filter(Boolean))].sort();
     return ['All', ...cats];
   }, [entries]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     const list = entries.filter(e => {
-      const matchSearch = !q || e.service.toLowerCase().includes(q) || e.username.toLowerCase().includes(q);
+      const matchSearch = !q || e.label.toLowerCase().includes(q) || (e.url ?? '').toLowerCase().includes(q);
       const matchCat    = categoryFilter === 'All' || e.category === categoryFilter;
       return matchSearch && matchCat;
     });
-
     list.sort((a, b) => {
       switch (sort) {
-        case 'name-asc':  return a.service.localeCompare(b.service);
-        case 'name-desc': return b.service.localeCompare(a.service);
-        case 'username':  return a.username.localeCompare(b.username);
+        case 'name-asc':  return a.label.localeCompare(b.label);
+        case 'name-desc': return b.label.localeCompare(a.label);
         case 'newest':    return b.createdAt - a.createdAt;
         case 'oldest':    return a.createdAt - b.createdAt;
       }
@@ -497,28 +634,19 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     return list;
   }, [entries, search, sort, categoryFilter]);
 
-  const handleCopied = (id: string) => {
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 1500);
-  };
+  const modalInitial = useMemo((): ModalFormEntry | null => {
+    if (!editTarget || editTarget === 'new') return null;
+    return {
+      service:     editTarget.entry.label,
+      url:         editTarget.entry.url ?? '',
+      username:    editTarget.decrypted.username,
+      password:    editTarget.decrypted.password,
+      description: editTarget.decrypted.notes ?? '',
+      category:    editTarget.entry.category ?? '',
+    };
+  }, [editTarget]);
 
-  const handleSave = (data: ModalEntry) => {
-    if (editTarget === 'new') {
-      setEntries(prev => [...prev, { id: genId(), ...data, createdAt: Date.now(), updatedAt: Date.now() }]);
-    } else if (editTarget) {
-      setEntries(prev =>
-        prev.map(e => e.id === (editTarget as PasswordEntry).id ? { ...e, ...data, updatedAt: Date.now() } : e),
-      );
-    }
-    setEditTarget(null);
-  };
-
-  const handleDelete = () => {
-    if (!deleteTarget) return;
-    setEntries(prev => prev.filter(e => e.id !== deleteTarget.id));
-    setDeleteTarget(null);
-  };
-
+  // ─── render ─────────────────────────────────────────────────────────────
   return (
     <>
       <div className="flex flex-col h-full max-w-6xl w-full mx-auto">
@@ -539,6 +667,7 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
               </div>
             </div>
           </div>
+
           <div className="flex gap-3">
             <div className="relative flex-1">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-dim" />
@@ -547,9 +676,9 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
                 placeholder="Search vault…"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full bg-card border border-edge text-hi
-                           placeholder-[var(--color-dim)] text-[17px] pl-11 pr-4 py-3 rounded-xl
-                           outline-none focus:border-accent-edge focus:ring-1 focus:ring-accent-soft
+                className="w-full bg-card border border-edge text-hi placeholder-[var(--color-dim)]
+                           text-[17px] pl-11 pr-4 py-3 rounded-xl outline-none
+                           focus:border-accent-edge focus:ring-1 focus:ring-accent-soft
                            transition-all duration-150"
               />
             </div>
@@ -587,11 +716,33 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
               ))}
             </div>
           )}
+
+          {/* Tap error banner */}
+          {tapError && (
+            <div className="flex items-start gap-2 mt-3 rounded-xl bg-err-soft border border-err-edge p-3">
+              <AlertCircle className="w-4 h-4 text-err shrink-0 mt-0.5" />
+              <p className="text-[13px] text-err flex-1">{tapError}</p>
+              <button onClick={() => setTapError(null)} className="text-err hover:text-hi shrink-0">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Table */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
-          {filtered.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center h-full gap-3 text-lo select-none">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span className="text-[16px]">Loading vault…</span>
+            </div>
+          ) : loadError ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-center select-none">
+              <AlertCircle className="w-8 h-8 text-err" />
+              <p className="text-err text-[16px] font-medium">Failed to load vault</p>
+              <p className="text-lo text-[14px] max-w-xs">{loadError}</p>
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center select-none">
               <div className="w-14 h-14 rounded-2xl bg-card border border-edge flex items-center justify-center">
                 <KeyRound className="w-6 h-6 text-dim" />
@@ -605,23 +756,23 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
             </div>
           ) : (
             <div className="bg-card border border-edge rounded-2xl overflow-hidden">
-              {/* Column header */}
               <div className={`${ROW_GRID} px-5 py-3 border-b border-edge bg-well/50`}>
-                <div />{/* avatar spacer */}
+                <div />
                 <p className="text-[12px] font-semibold text-lo uppercase tracking-widest">Service</p>
                 <p className="text-[12px] font-semibold text-lo uppercase tracking-widest hidden sm:block">Username</p>
                 <p className="text-[12px] font-semibold text-lo uppercase tracking-widest hidden md:block">Last Edited</p>
                 <p className="text-[12px] font-semibold text-lo uppercase tracking-widest text-right">Actions</p>
               </div>
-
               {filtered.map(entry => (
                 <PasswordCard
                   key={entry.id}
                   entry={entry}
-                  revealDuration={revealDuration}
+                  decrypted={revealedId === entry.id ? revealedPayload : null}
+                  isRevealed={revealedId === entry.id}
                   copiedId={copiedId}
-                  onCopied={handleCopied}
-                  onEdit={() => setEditTarget(entry)}
+                  onRevealToggle={() => handleRevealToggle(entry)}
+                  onCopyClick={() => handleCopyClick(entry)}
+                  onEdit={() => handleEdit(entry)}
                   onDelete={() => setDeleteTarget(entry)}
                   theme={theme}
                 />
@@ -630,7 +781,7 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
           )}
         </div>
 
-        {/* Footer bar */}
+        {/* Footer */}
         <div className="px-6 py-3.5 shrink-0 flex items-center justify-between border-t border-well">
           <p className="text-[14px] text-dim">
             {filtered.length} of {entries.length} entr{entries.length === 1 ? 'y' : 'ies'}
@@ -645,13 +796,12 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
             New Credential
           </button>
         </div>
-
       </div>
 
       {/* Modals */}
       {editTarget !== null && (
         <EntryModal
-          initial={editTarget === 'new' ? null : editTarget}
+          initial={modalInitial}
           onSave={handleSave}
           onClose={() => setEditTarget(null)}
         />
@@ -663,7 +813,11 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
           onClose={() => setDeleteTarget(null)}
         />
       )}
+
+      {/* Card tap overlay */}
+      {tapOverlay && (
+        <TapCardOverlay message={tapOverlay.label} onCancel={handleCancelTap} />
+      )}
     </>
   );
 };
-

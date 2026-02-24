@@ -1,9 +1,15 @@
-import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog, safeStorage } from 'electron'
 import { SerialPort } from 'serialport';
 import fs from 'fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { isDev } from './utils.js';
 import { MyLibraryBinding, NfcCppBinding } from './bindings.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
+import { openVault, closeVault } from './vault.js';
+import { registerCardHandlers } from './cardHandlers.js';
+import { registerVaultHandlers } from './vaultHandlers.js';
+import { cancelCardWait } from './nfcCancel.js';
 
 // Add global error handlers to catch crashes
 process.on('uncaughtException', (error) => {
@@ -17,6 +23,51 @@ process.on('unhandledRejection', (reason, promise) => {
 
 let mainWindow: BrowserWindow | null = null;
 let nfcBinding: NfcCppBinding | null = null;
+
+// ── Machine secret ────────────────────────────────────────────────────────────
+
+/**
+ * In-memory handle to the 32-byte machine secret.
+ * Loaded from OS secure storage on startup. Never sent to renderer.
+ */
+let machineSecret: Buffer | null = null;
+
+/**
+ * Returns the machine secret. Throws if called before app.ready or when
+ * safeStorage is unavailable.
+ */
+export function getMachineSecret(): Buffer {
+  if (!machineSecret) throw new Error('Machine secret not initialised');
+  return machineSecret;
+}
+
+function initMachineSecret(): void {
+  if (!safeStorage.isEncryptionAvailable()) {
+    // Fail closed — OS secure storage is mandatory for vault operations.
+    // On Linux this means libsecret is not available.
+    console.error('[VAULT] safeStorage encryption is not available on this system.');
+    app.quit();
+    return;
+  }
+
+  const secretPath = path.join(app.getPath('userData'), 'machine.secret');
+
+  if (fs.existsSync(secretPath)) {
+    // Decrypt and load the existing secret.
+    const encrypted = fs.readFileSync(secretPath);
+    const decrypted = safeStorage.decryptString(encrypted);
+    machineSecret = Buffer.from(decrypted, 'base64');
+    console.log('[VAULT] Machine secret loaded from secure storage.');
+  } else {
+    // First run — generate a new 32-byte secret and persist it.
+    const raw = crypto.randomBytes(32);
+    const encoded = raw.toString('base64');
+    const encrypted = safeStorage.encryptString(encoded);
+    fs.writeFileSync(secretPath, encrypted);
+    machineSecret = raw;
+    console.log('[VAULT] Machine secret generated and stored.');
+  }
+}
 
 function sendLogToRenderer(level: 'info' | 'warn' | 'error', message: string) {
   const entry: NfcLogEntry = {
@@ -34,7 +85,21 @@ function nfcLog(level: 'info' | 'warn' | 'error', message: string) {
 
 app.on('ready', () => {
   console.log('[MAIN.TS] App ready event fired');
+
+  // Initialise machine secret (fail-closed if safeStorage unavailable).
+  initMachineSecret();
+
+  // Open vault DB and run any pending migrations.
+  openVault();
+
   nfcBinding = new NfcCppBinding();
+
+  // Register card and vault IPC handlers now that nfcBinding exists.
+  registerCardHandlers(nfcBinding, nfcLog);
+  registerVaultHandlers(nfcBinding, nfcLog);
+
+  // Allow the renderer to abort any in-progress card-wait polling loop.
+  ipcMain.handle('nfc:cancel', () => { cancelCardWait(); });
 
   // Forward all C++ library logs to the in-app debug terminal
   nfcBinding.setLogCallback((level: string, message: string) => {
@@ -221,5 +286,14 @@ app.on('before-quit', async () => {
     } catch {
       // best-effort — process is exiting regardless
     }
+  }
+
+  // Close vault DB gracefully.
+  closeVault();
+
+  // Zeroize machine secret before process exits.
+  if (machineSecret) {
+    machineSecret.fill(0);
+    machineSecret = null;
   }
 });

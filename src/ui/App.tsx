@@ -7,6 +7,7 @@ import { LockTransition } from './Components/LockTransition';
 import { DebugTerminal } from './Components/DebugTerminal';
 import { PasswordsPage } from './pages/PasswordsPage';
 import { GeneratorPage } from './pages/GeneratorPage';
+import { CardPage } from './pages/CardPage';
 import { NfcReaderPage } from './pages/NfcReaderPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AboutPage } from './pages/AboutPage';
@@ -84,6 +85,9 @@ function App() {
               </div>
               <div className={path === '/generator' ? 'block' : 'hidden'}>
                 <GeneratorPage />
+              </div>
+              <div className={path === '/card' ? 'block' : 'hidden'}>
+                <CardPage isNfcConnected={isNfcConnected} />
               </div>
               <div className={path === '/nfc' ? 'block' : 'hidden'}>
                 <NfcReaderPage

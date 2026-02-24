@@ -18,7 +18,8 @@
     "transpile:electron": "tsc --project src/electron/tsconfig.json",
     "dist:mac": "npm run transpile:electron && npm run build && electron-builder --mac --arm64",
     "dist:win": "npm run transpile:electron && npm run build && electron-builder --win --x64",
-    "dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64"
+    "dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64",
+    "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "binary": {
     "napi_version": [
@@ -27,6 +28,8 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.6.2",
     "cmake-js": "^7.3.1",
     "lucide-react": "^0.575.0",
     "node-addon-api": "^8.5.0",

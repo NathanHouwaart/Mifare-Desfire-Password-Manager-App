@@ -1,12 +1,13 @@
 import { NavLink } from 'react-router-dom';
-import { KeyRound, Shuffle, Cpu, Settings, Info, ShieldCheck, Lock } from 'lucide-react';
+import { KeyRound, Shuffle, Cpu, CreditCard, Settings, Info, ShieldCheck, Lock } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { to: '/passwords', icon: KeyRound,  label: 'Passwords'  },
-  { to: '/generator', icon: Shuffle,   label: 'Generator'  },
-  { to: '/nfc',       icon: Cpu,       label: 'NFC Reader' },
-  { to: '/settings',  icon: Settings,  label: 'Settings'   },
-  { to: '/about',     icon: Info,      label: 'About'      },
+  { to: '/passwords', icon: KeyRound,   label: 'Passwords'  },
+  { to: '/generator', icon: Shuffle,    label: 'Generator'  },
+  { to: '/card',      icon: CreditCard, label: 'Card'       },
+  { to: '/nfc',       icon: Cpu,        label: 'NFC Reader' },
+  { to: '/settings',  icon: Settings,   label: 'Settings'   },
+  { to: '/about',     icon: Info,       label: 'About'      },
 ];
 
 interface SidebarProps {
