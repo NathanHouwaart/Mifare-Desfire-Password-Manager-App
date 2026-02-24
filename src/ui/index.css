@@ -1,3 +1,169 @@
 @import "tailwindcss";
-  
-/* background-color: #242424;  */
+
+/* Design tokens */
+@theme {
+  /* Surfaces */
+  --color-page:   #18181b;
+  --color-nav:    #1e1e22;
+  --color-card:   #27272a;
+  --color-well:   #2c2c30;
+  --color-input:  #323238;
+
+  /* Borders */
+  --color-edge:   #3f3f46;
+  --color-edge2:  #52525b;
+
+  /* Text */
+  --color-hi:     #f4f4f5;
+  --color-mid:    #a1a1aa;
+  --color-lo:     #9a9aa8;
+  --color-dim:    #8a8a96;
+  --color-bright: #e4e4e7;
+
+  /* Semantic colors */
+  --color-accent:       #a5b4fc;
+  --color-accent-soft:  #6366f11a;
+  --color-accent-edge:  #6366f14d;
+  --color-accent-solid: #6366f1;
+  --color-accent-hover: #4f46e5;
+
+  --color-ok:      #4ade80;
+  --color-ok-soft: #22c55e1a;
+  --color-ok-edge: #22c55e4d;
+
+  --color-err:      #f87171;
+  --color-err-soft: #ef44441a;
+  --color-err-edge: #ef44444d;
+
+  --color-warn:      #facc15;
+  --color-warn-soft: #f59e0b1a;
+  --color-warn-edge: #f59e0b4d;
+}
+
+/* Light mode overrides */
+.light {
+  --color-page:   #e9edf3;
+  --color-nav:    #dfe5ee;
+  --color-card:   #f7f9fc;
+  --color-well:   #eef2f7;
+  --color-input:  #e7edf5;
+
+  --color-edge:   #c9d3df;
+  --color-edge2:  #a3b1c2;
+
+  --color-hi:     #111827;
+  --color-mid:    #334155;
+  --color-lo:     #475569;
+  --color-dim:    #5b6a80;
+  --color-bright: #0f172a;
+
+  --color-accent:       #4338ca;
+  --color-accent-soft:  #4338ca14;
+  --color-accent-edge:  #4338ca33;
+  --color-accent-solid: #4f46e5;
+  --color-accent-hover: #4338ca;
+
+  --color-ok:      #166534;
+  --color-ok-soft: #16653414;
+  --color-ok-edge: #16653433;
+
+  --color-err:      #b91c1c;
+  --color-err-soft: #b91c1c14;
+  --color-err-edge: #b91c1c33;
+
+  --color-warn:      #92400e;
+  --color-warn-soft: #92400e14;
+  --color-warn-edge: #92400e33;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  font-size: 16px;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Slim custom scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-edge, #3f3f46); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-edge2, #52525b); }
+
+/* Shake animation for wrong PIN */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-8px); }
+  40%, 80% { transform: translateX(8px); }
+}
+.shake { animation: shake 0.45s ease; }
+
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Terminal panel ─ always dark regardless of theme ──────────── */
+.terminal-panel {
+  --color-well:   #16161a;
+  --color-input:  #1e1e24;
+  --color-edge:   #2a2a32;
+  --color-edge2:  #36363f;
+  --color-hi:     #f4f4f5;
+  --color-bright: #e4e4e7;
+  --color-mid:    #a1a1aa;
+  --color-lo:     #9a9aa8;
+  --color-dim:    #7a7a88;
+  --color-ok:     #4ade80;
+  --color-err:    #f87171;
+  --color-warn:   #facc15;
+  --color-accent: #818cf8;
+}
+
+/* Lock and unlock animations */
+@keyframes lockRingSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes lockRingSpinRev {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(-360deg); }
+}
+@keyframes lockRingPulse {
+  0%, 100% { transform: scale(1); opacity: 0.3; }
+  50%      { transform: scale(1.14); opacity: 0.7; }
+}
+
+@keyframes unlockBurst {
+  0%   { transform: scale(1); opacity: 0.75; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+@keyframes unlockIconSpin {
+  0%   { transform: rotate(0deg) scale(1); }
+  35%  { transform: rotate(190deg) scale(1.14); }
+  70%  { transform: rotate(340deg) scale(1.06); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+/* Splash screen animations */
+@keyframes splashIcon {
+  from { opacity: 0; transform: scale(0.4) rotate(-14deg); }
+  to   { opacity: 1; transform: scale(1) rotate(0deg); }
+}
+
+@keyframes splashFadeUp {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes splashRing {
+  0%   { transform: scale(1); opacity: 0.55; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
+@keyframes splashDot {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.35; }
+  40%           { transform: scale(1); opacity: 1; }
+}

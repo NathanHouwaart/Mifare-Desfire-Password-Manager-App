@@ -4,6 +4,7 @@ const MIN_HEIGHT = 80;
 const MAX_HEIGHT = 600;
 const DEFAULT_HEIGHT = 208;
 const CLOSE_THRESHOLD = 40;
+const AUTO_SCROLL_THRESHOLD = 40;
 
 interface DebugTerminalProps {
   isOpen: boolean;
@@ -15,31 +16,55 @@ export const DebugTerminal = ({ isOpen, onOpenChange }: DebugTerminalProps) => {
   const [open, setOpen] = useState(isOpen);
   const [height, setHeight] = useState(DEFAULT_HEIGHT);
   const openRef = useRef(isOpen);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
+  const stickToBottomRef = useRef(true);
+  const pendingAutoScrollRef = useRef(false);
 
   useEffect(() => { setOpen(isOpen); openRef.current = isOpen; }, [isOpen]);
 
   useEffect(() => {
+    const isNearBottom = () => {
+      const el = scrollRef.current;
+      if (!el) return true;
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      return distanceFromBottom <= AUTO_SCROLL_THRESHOLD;
+    };
+
     const unsubscribe = window.electron.onNfcLog((entry) => {
+      const wasNearBottom = stickToBottomRef.current || isNearBottom();
+      if (wasNearBottom) pendingAutoScrollRef.current = true;
       setLogs((prev) => [...prev, entry]);
     });
     return unsubscribe;
   }, []);
 
-  const scrollToBottomIfNear = () => {
+  const syncStickToBottom = () => {
     const el = scrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distanceFromBottom < 40) {
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' });
-    }
+    stickToBottomRef.current = distanceFromBottom <= AUTO_SCROLL_THRESHOLD;
   };
 
   useEffect(() => {
-    if (open) scrollToBottomIfNear();
+    if (!open || !pendingAutoScrollRef.current) return;
+    pendingAutoScrollRef.current = false;
+    requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      el.scrollTop = el.scrollHeight;
+      stickToBottomRef.current = true;
+    });
   }, [logs, open, height]);
+
+  useEffect(() => {
+    if (!open || !stickToBottomRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  }, [open, height]);
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -83,48 +108,69 @@ export const DebugTerminal = ({ isOpen, onOpenChange }: DebugTerminalProps) => {
   }, [onOpenChange]);
 
   const levelStyle = (level: NfcLogEntry['level']) => {
-    if (level === 'error') return 'text-red-400';
-    if (level === 'warn') return 'text-yellow-400';
-    return 'text-green-400';
+    if (level === 'error') return 'text-err';
+    if (level === 'warn') return 'text-warn';
+    return 'text-ok';
+  };
+
+  const handleExport = async () => {
+    if (logs.length === 0) return;
+    const header = [
+      'SecurePass — NFC Output Log',
+      `Exported: ${new Date().toLocaleString()}`,
+      `Entries:  ${logs.length}`,
+      '─'.repeat(60),
+      '',
+    ].join('\n');
+    const body = logs
+      .map(l => `${l.timestamp}  [${l.level.toUpperCase().padEnd(5)}]  ${l.message}`)
+      .join('\n');
+    const filename = `nfc-log-${new Date().toISOString().slice(0, 10)}.txt`;
+    await window.electron.saveFile(filename, header + body);
   };
 
   return (
     <div
-      className="fixed bottom-0 left-0 right-0 bg-[#1e1e1e] border-t border-[#3c3c3c]"
+      className="terminal-panel relative shrink-0 w-full bg-well border-t border-edge2"
       style={{ height: open ? height + 32 : 32 }}
     >
-      {/* Resize handle — always present at the top edge */}
+      {/* Resize handle */}
       <div
-        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors z-10"
+        className="absolute top-0 left-0 right-0 h-1 cursor-ns-resize hover:bg-accent-soft active:bg-accent-edge transition-colors z-10"
         onMouseDown={onMouseDown}
       />
 
       {/* Title bar */}
       <div
-        className="flex items-center justify-between px-3 h-8 select-none cursor-pointer hover:bg-[#2a2a2a]"
+        className="flex items-center justify-between px-3 h-8 select-none cursor-pointer hover:bg-input"
         onClick={() => { const next = !open; setOpen(next); onOpenChange(next); }}
       >
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-widest">
+          <span className="text-[12px] font-semibold text-lo uppercase tracking-widest">
             NFC Output
           </span>
           {logs.length > 0 && (
-            <span className="text-[10px] bg-[#3c3c3c] text-gray-400 px-1.5 py-0.5 rounded-full">
+            <span className="text-[11px] bg-edge2 text-mid px-1.5 py-0.5 rounded-full">
               {logs.length}
             </span>
           )}
         </div>
         <div className="flex items-center gap-3">
+          {logs.length > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleExport(); }}
+              className="text-[12px] text-dim hover:text-hi px-1"
+            >
+              Export
+            </button>
+          )}
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setLogs([]);
-            }}
-            className="text-[11px] text-gray-500 hover:text-gray-200 px-1"
+            onClick={(e) => { e.stopPropagation(); setLogs([]); }}
+            className="text-[12px] text-dim hover:text-hi px-1"
           >
             Clear
           </button>
-          <span className="text-gray-500 text-xs">{open ? '▼' : '▲'}</span>
+          <span className="text-dim text-xs">{open ? '▼' : '▲'}</span>
         </div>
       </div>
 
@@ -132,23 +178,23 @@ export const DebugTerminal = ({ isOpen, onOpenChange }: DebugTerminalProps) => {
       {open && (
         <div
           ref={scrollRef}
-          className="overflow-y-auto px-3 py-1 font-mono text-[12px]"
+          onScroll={syncStickToBottom}
+          className="overflow-y-auto px-3 py-1 font-mono text-[13px]"
           style={{ height: height }}
         >
           {logs.length === 0 ? (
-            <span className="text-[#555]">No output yet. Connect to a PN532 device to see logs.</span>
+            <span className="text-lo">No output yet. Connect to a PN532 device to see logs.</span>
           ) : (
             logs.map((log, i) => (
               <div key={i} className="flex gap-2 leading-5">
-                <span className="text-[#555] shrink-0">{log.timestamp}</span>
+                <span className="text-lo shrink-0">{log.timestamp}</span>
                 <span className={`shrink-0 ${levelStyle(log.level)}`}>
                   [{log.level.toUpperCase()}]
                 </span>
-                <span className="text-[#d4d4d4]">{log.message}</span>
+                <span className="text-bright">{log.message}</span>
               </div>
             ))
           )}
-          <div ref={bottomRef} />
         </div>
       )}
     </div>

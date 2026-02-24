@@ -1,4 +1,6 @@
-import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog } from 'electron'
+import { SerialPort } from 'serialport';
+import fs from 'fs';
 import { isDev } from './utils.js';
 import { MyLibraryBinding, NfcCppBinding } from './bindings.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
@@ -53,7 +55,7 @@ app.on('ready', () => {
   });
 
   if (isDev()) {
-    mainWindow.loadURL('http://localhost:5123');
+    mainWindow.loadURL('http://localhost:5124');
   } else {
     mainWindow.loadFile(getUIPath());
   }
@@ -99,6 +101,24 @@ ipcMain.handle('disconnect', async (_event: IpcMainInvokeEvent) => {
     nfcLog('error', msg);
     throw error;
   }
+});
+
+ipcMain.handle('listComPorts', async () => {
+  const ports = await SerialPort.list();
+  console.log('[listComPorts]', ports);
+  return ports.map(p => ({ path: p.path, manufacturer: p.manufacturer }));
+});
+
+ipcMain.handle('saveFile', async (_event: IpcMainInvokeEvent, filename: string, content: string) => {
+  if (!mainWindow) return false;
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: 'Export NFC Log',
+    defaultPath: filename,
+    filters: [{ name: 'Text files', extensions: ['txt'] }, { name: 'All files', extensions: ['*'] }],
+  });
+  if (canceled || !filePath) return false;
+  fs.writeFileSync(filePath, content, 'utf-8');
+  return true;
 });
 
 app.on('window-all-closed', () => {

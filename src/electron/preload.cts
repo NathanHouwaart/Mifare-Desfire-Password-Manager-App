@@ -5,7 +5,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
     add: (a: number, b: number) => ipcInvoke("add", a, b),
     connect: (port: string) => ipcInvoke("connect", port),
     disconnect: () => ipcInvoke("disconnect"),
+    listComPorts: () => ipcInvoke("listComPorts"),
     onNfcLog: (callback: (entry: NfcLogEntry) => void) => ipcOn('nfc-log', callback),
+    saveFile: (filename: string, content: string) => ipcInvoke("saveFile", filename, content),
 } satisfies Window["electron"]);
 
 

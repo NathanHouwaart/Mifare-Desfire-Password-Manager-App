@@ -10,7 +10,7 @@ export default defineConfig({
     outDir: 'dist-react'
   },
   server: {
-    port: 5123,
+    port: 5124,
     strictPort: true
   }
 })

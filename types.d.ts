@@ -1,4 +1,5 @@
 type NfcLogEntry = { level: 'info' | 'warn' | 'error'; message: string; timestamp: string };
+type ComPort = { path: string; manufacturer?: string };
 
 type RendererEvents = {
   'nfc-log': NfcLogEntry;
@@ -10,6 +11,8 @@ type IPCHandlers = {
   add: (a: number, b: number) => Promise<number>;
   connect: (port: string) => Promise<string>;
   disconnect: () => Promise<boolean>;
+  listComPorts: () => Promise<ComPort[]>;
+  saveFile: (filename: string, content: string) => Promise<boolean>;
 };
 
 // 2) helpers derived from IPCHandlers
