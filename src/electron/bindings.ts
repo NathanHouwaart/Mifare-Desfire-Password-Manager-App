@@ -40,6 +40,9 @@ export interface NfcCppBinding {
     connect(port: string): Promise<string>;
     disconnect(): Promise<boolean>;
     setLogCallback(callback: (level: string, message: string) => void): void;
+    getFirmwareVersion(): Promise<string>;
+    runSelfTests(onProgress?: (row: SelfTestResultDto) => void): Promise<SelfTestReportDto>;
+    getCardVersion(): Promise<CardVersionInfoDto>;
 }
 
 export const NfcCppBinding: {

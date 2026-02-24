@@ -1,10 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback } from 'react';
 import { Cpu, Terminal } from 'lucide-react';
 import { ConnectionCard }     from '../Components/Nfc/ConnectionCard';
 import { FirmwareVersionCard } from '../Components/Nfc/FirmwareVersionCard';
-import { DebugVersionCard }    from '../Components/Nfc/DebugVersionCard';
+import { CardVersionCard }    from '../Components/Nfc/CardVersionCard';
 import { SelfTestCard, INITIAL_TESTS } from '../Components/Nfc/SelfTestCard';
 import type { TestResult }     from '../Components/Nfc/SelfTestCard';
+
+// Stable canonical ID map â€” avoids fragile string transforms on C++ names
+const TEST_ID_BY_NAME: Record<string, string> = {
+  'ROM Check':     'rom',
+  'RAM Check':     'ram',
+  'Communication': 'communication',
+  'Echo Test':     'echo',
+  'Antenna':       'antenna',
+};
+
+// Extract error.code from a native binding rejection
+function errorCode(err: unknown): string {
+  if (err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string') {
+    return (err as { code: string }).code;
+  }
+  return 'HARDWARE_ERROR';
+}
 
 interface NfcReaderPageProps {
   isTerminalOpen: boolean;
@@ -19,42 +36,46 @@ export const NfcReaderPage = ({
   isConnected, onConnectionChange, terminalEnabled,
 }: NfcReaderPageProps) => {
 
-  /* ── Connection state ─────────────────────────────────────────── */
+  /* â”€â”€ Connection state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const [port,           setPort]           = useState('');
   const [statusMsg,      setStatusMsg]      = useState('');
   const [availablePorts, setAvailablePorts] = useState<ComPort[]>([]);
   const [portsLoading,   setPortsLoading]   = useState(false);
 
-  /* ── Firmware card state ──────────────────────────────────────── */
+  /* â”€â”€ Firmware card state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const [firmware,        setFirmware]        = useState<string | null>(null);
   const [firmwareLoading, setFirmwareLoading] = useState(false);
   const [firmwareStale,   setFirmwareStale]   = useState(true);
+  const [firmwareError,   setFirmwareError]   = useState<string | null>(null);
 
-  /* ── Self-test state ──────────────────────────────────────────── */
+  /* â”€â”€ Self-test state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const [tests,        setTests]        = useState<TestResult[]>(INITIAL_TESTS);
   const [testRunning,  setTestRunning]  = useState(false);
   const [testSummary,  setTestSummary]  = useState<string | null>(null);
   const [testsStarted, setTestsStarted] = useState(false);
 
-  /* ── Debug version state ──────────────────────────────────────── */
-  const [debugVersion, setDebugVersion] = useState<string | null>(null);
-  const [debugLoading, setDebugLoading] = useState(false);
-  const [debugStale,   setDebugStale]   = useState(true);
+  /* â”€â”€ Card version state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  const [cardVersion, setCardVersion] = useState<CardVersionInfoDto | null>(null);
+  const [cardLoading, setCardLoading] = useState(false);
+  const [cardStale,   setCardStale]   = useState(true);
+  const [cardError,   setCardError]   = useState<string | null>(null);
 
-  /* ── Stale skeleton timers ────────────────────────────────────── */
+  /* â”€â”€ Stale skeleton timers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   useEffect(() => {
     const fw = setTimeout(() => setFirmwareStale(false), 1800);
-    const dv = setTimeout(() => setDebugStale(false),    1400);
-    return () => { clearTimeout(fw); clearTimeout(dv); };
+    const cv = setTimeout(() => setCardStale(false),     1400);
+    return () => { clearTimeout(fw); clearTimeout(cv); };
   }, []);
 
-  /* ── Reset all cards on disconnect ───────────────────────────── */
+  /* â”€â”€ Reset all cards on disconnect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   useEffect(() => {
     if (!isConnected) {
       setFirmware(null);
       setFirmwareLoading(false);
-      setDebugVersion(null);
-      setDebugLoading(false);
+      setFirmwareError(null);
+      setCardVersion(null);
+      setCardLoading(false);
+      setCardError(null);
       setTests(INITIAL_TESTS);
       setTestRunning(false);
       setTestSummary(null);
@@ -62,7 +83,7 @@ export const NfcReaderPage = ({
     }
   }, [isConnected]);
 
-  /* ── COM port helpers ─────────────────────────────────────────── */
+  /* â”€â”€ COM port helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const fetchPorts = useCallback(async () => {
     setPortsLoading(true);
     try {
@@ -84,7 +105,7 @@ export const NfcReaderPage = ({
   const handleConnect = async () => {
     if (!port) return;
     try {
-      setStatusMsg('Connecting…');
+      setStatusMsg('Connectingâ€¦');
       const result = await window.electron.connect(port);
       setStatusMsg(result);
       onConnectionChange(true);
@@ -96,7 +117,7 @@ export const NfcReaderPage = ({
 
   const handleDisconnect = async () => {
     try {
-      setStatusMsg('Disconnecting…');
+      setStatusMsg('Disconnectingâ€¦');
       const result = await window.electron.disconnect();
       setStatusMsg(result ? 'Disconnected successfully' : 'Disconnect returned false');
       onConnectionChange(false);
@@ -105,45 +126,91 @@ export const NfcReaderPage = ({
     }
   };
 
-  /* ── Stub handlers (real IPC wired up in a later pass) ────────── */
+  /* â”€â”€ Real IPC handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const handleGetFirmware = async () => {
     setFirmwareLoading(true);
     setFirmware(null);
-    // TODO: replace with window.electron.getFirmwareVersion()
-    await new Promise(r => setTimeout(r, 1400));
-    setFirmware('PN532 v1.6  (chip: 0x0106)');
-    setFirmwareLoading(false);
+    setFirmwareError(null);
+    try {
+      const result = await window.electron.getFirmwareVersion();
+      setFirmware(result);
+    } catch (err: unknown) {
+      const code = errorCode(err);
+      const msg  = err instanceof Error ? err.message : String(err);
+      setFirmwareError(
+        code === 'NOT_CONNECTED' ? 'Connect to PN532 first.' : 'Error: ' + msg
+      );
+    } finally {
+      setFirmwareLoading(false);
+    }
   };
 
   const handleRunSelfTests = async () => {
     setTestRunning(true);
     setTestsStarted(true);
     setTestSummary(null);
-    setTests(INITIAL_TESTS.map(t => ({ ...t, status: 'pending' })));
-    // TODO: replace with window.electron.runSelfTests()
-    for (let i = 0; i < INITIAL_TESTS.length; i++) {
-      setTests(prev => prev.map((t, idx) =>
-        idx === i ? { ...t, status: 'running' } : t,
-      ));
-      await new Promise(r => setTimeout(r, 650));
-      setTests(prev => prev.map((t, idx) =>
-        idx === i ? { ...t, status: 'success' } : t,
-      ));
+    // First row starts spinning immediately; the rest stay pending until the row before them completes
+    setTests(INITIAL_TESTS.map((t, i) => ({ ...t, status: i === 0 ? 'running' : 'pending' })));
+
+    // Register the streaming listener before invoking so no events are missed
+    const unsubscribe = window.electron.onSelfTestProgress((row) => {
+      const id = TEST_ID_BY_NAME[row.name] ?? row.name.toLowerCase().replace(/\s/g, '_');
+      setTests(prev => {
+        const next = prev.map(t => t.id === id ? { ...t, status: row.status } : t);
+        // Mark the immediately following pending row as 'running' so the spinner advances
+        const justFinishedIdx = next.findIndex(t => t.id === id);
+        if (justFinishedIdx !== -1 && justFinishedIdx + 1 < next.length) {
+          const nextRow = next[justFinishedIdx + 1];
+          if (nextRow.status === 'pending') {
+            next[justFinishedIdx + 1] = { ...nextRow, status: 'running' };
+          }
+        }
+        return next;
+      });
+    });
+
+    try {
+      const report = await window.electron.runSelfTests();
+      // Final authoritative state from the full report (handles any missed events)
+      setTests(report.results.map(r => ({
+        id:     TEST_ID_BY_NAME[r.name] ?? r.name.toLowerCase().replace(/\s/g, '_'),
+        label:  r.name,
+        status: r.status,
+      })));
+      const passed = report.results.filter(r => r.status === 'success').length;
+      setTestSummary(passed === 5 ? 'All 5 tests passed' : `${passed}/5 tests passed`);
+    } catch (err: unknown) {
+      const code = errorCode(err);
+      const msg  = err instanceof Error ? err.message : String(err);
+      setTests(INITIAL_TESTS.map(t => ({ ...t, status: 'failed' })));
+      setTestSummary(code === 'NOT_CONNECTED' ? 'Connect to PN532 first.' : 'Error: ' + msg);
+    } finally {
+      unsubscribe();
+      setTestRunning(false);
     }
-    setTestSummary('All 5 tests passed');
-    setTestRunning(false);
   };
 
-  const handleGetDebugVersion = async () => {
-    setDebugLoading(true);
-    setDebugVersion(null);
-    // TODO: replace with window.electron.getVersion()
-    await new Promise(r => setTimeout(r, 1100));
-    setDebugVersion('SecurePass v0.1.0-dev  —  build 2024.12.01');
-    setDebugLoading(false);
+  const handleGetCardVersion = async () => {
+    setCardLoading(true);
+    setCardVersion(null);
+    setCardError(null);
+    try {
+      const result = await window.electron.getCardVersion();
+      setCardVersion(result);
+    } catch (err: unknown) {
+      const code = errorCode(err);
+      setCardError(
+        code === 'NO_CARD'        ? 'Tap a DESFire card and try again.'        :
+        code === 'NOT_DESFIRE'    ? 'Card detected but not DESFire-compatible.' :
+        code === 'NOT_CONNECTED'  ? 'Connect to PN532 first.'                  :
+        'Error: ' + (err instanceof Error ? err.message : String(err))
+      );
+    } finally {
+      setCardLoading(false);
+    }
   };
 
-  /* ── Render ───────────────────────────────────────────────────── */
+  /* â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   return (
     <div className="px-6 py-6 max-w-4xl w-full mx-auto">
 
@@ -161,7 +228,7 @@ export const NfcReaderPage = ({
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
-        {/* Connection — full width */}
+        {/* Connection â€” full width */}
         <div className="lg:col-span-2">
           <ConnectionCard
             isConnected={isConnected}
@@ -182,19 +249,21 @@ export const NfcReaderPage = ({
           firmware={firmware}
           loading={firmwareLoading}
           stale={firmwareStale}
+          errorMsg={firmwareError}
           onGetFirmware={handleGetFirmware}
         />
 
-        {/* Debug Version */}
-        <DebugVersionCard
+        {/* Card Version */}
+        <CardVersionCard
           isConnected={isConnected}
-          debugVersion={debugVersion}
-          loading={debugLoading}
-          stale={debugStale}
-          onGetVersion={handleGetDebugVersion}
+          cardVersion={cardVersion}
+          loading={cardLoading}
+          stale={cardStale}
+          errorMsg={cardError}
+          onGetVersion={handleGetCardVersion}
         />
 
-        {/* Self-Test Diagnostics — full width */}
+        {/* Self-Test Diagnostics â€” full width */}
         <div className="lg:col-span-2">
           <SelfTestCard
             isConnected={isConnected}

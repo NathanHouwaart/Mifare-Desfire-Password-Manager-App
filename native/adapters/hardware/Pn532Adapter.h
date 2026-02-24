@@ -21,8 +21,11 @@ class Pn532Adapter : public core::ports::INfcReader {
 public:
     Pn532Adapter();
     ~Pn532Adapter() override;
-    core::ports::Result<std::string> connect(const std::string& port) override;
-    core::ports::Result<bool> disconnect() override;
+    core::ports::Result<std::string>             connect(const std::string& port) override;
+    core::ports::Result<bool>                    disconnect() override;
+    core::ports::Result<std::string>             getFirmwareVersion() override;
+    core::ports::Result<core::ports::SelfTestReport>  runSelfTests(core::ports::SelfTestProgressCb onResult = nullptr) override;
+    core::ports::Result<core::ports::CardVersionInfo> getCardVersion() override;
     void setLogCallback(core::ports::NfcLogCallback callback) override;
 
 private:

@@ -7,7 +7,11 @@ electron.contextBridge.exposeInMainWorld("electron", {
     disconnect: () => ipcInvoke("disconnect"),
     listComPorts: () => ipcInvoke("listComPorts"),
     onNfcLog: (callback: (entry: NfcLogEntry) => void) => ipcOn('nfc-log', callback),
+    onSelfTestProgress: (callback: (result: SelfTestResultDto) => void) => ipcOn('nfc:selfTestProgress', callback),
     saveFile: (filename: string, content: string) => ipcInvoke("saveFile", filename, content),
+    getFirmwareVersion: () => ipcInvoke("getFirmwareVersion"),
+    runSelfTests: () => ipcInvoke("runSelfTests"),
+    getCardVersion: () => ipcInvoke("getCardVersion"),
 } satisfies Window["electron"]);
 
 

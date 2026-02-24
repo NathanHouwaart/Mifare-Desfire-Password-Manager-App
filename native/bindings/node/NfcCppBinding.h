@@ -11,6 +11,9 @@ public:
     Napi::Value Connect(const Napi::CallbackInfo&);
     Napi::Value Disconnect(const Napi::CallbackInfo&);
     Napi::Value SetLogCallback(const Napi::CallbackInfo&);
+    Napi::Value GetFirmwareVersion(const Napi::CallbackInfo&);
+    Napi::Value RunSelfTests(const Napi::CallbackInfo&);
+    Napi::Value GetCardVersion(const Napi::CallbackInfo&);
 
     static Napi::Function GetClass(Napi::Env);
 

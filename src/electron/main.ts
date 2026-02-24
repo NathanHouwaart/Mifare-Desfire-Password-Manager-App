@@ -121,6 +121,95 @@ ipcMain.handle('saveFile', async (_event: IpcMainInvokeEvent, filename: string, 
   return true;
 });
 
+// ─── Runtime DTO guards ───────────────────────────────────────────────────────
+
+const CANONICAL_TEST_NAMES = ['ROM Check', 'RAM Check', 'Communication', 'Echo Test', 'Antenna'];
+
+function isSelfTestReportDto(payload: unknown): payload is SelfTestReportDto {
+  if (!payload || typeof payload !== 'object') return false;
+  const obj = payload as Record<string, unknown>;
+  if (!Array.isArray(obj.results) || obj.results.length !== 5) return false;
+  for (let i = 0; i < 5; i++) {
+    const r = obj.results[i] as Record<string, unknown>;
+    if (!r || typeof r.name !== 'string' || typeof r.status !== 'string' || typeof r.detail !== 'string') return false;
+    if (!['success', 'failed', 'skipped'].includes(r.status)) return false;
+    if (r.name !== CANONICAL_TEST_NAMES[i]) return false;
+  }
+  return true;
+}
+
+function isCardVersionInfoDto(payload: unknown): payload is CardVersionInfoDto {
+  if (!payload || typeof payload !== 'object') return false;
+  const obj = payload as Record<string, unknown>;
+  return typeof obj.hwVersion === 'string' && typeof obj.swVersion === 'string' &&
+         typeof obj.uidHex === 'string' && typeof obj.storage === 'string' &&
+         typeof obj.rawVersionHex === 'string';
+}
+
+// ─── New IPC handlers ─────────────────────────────────────────────────────────
+
+ipcMain.handle('getFirmwareVersion', async () => {
+  if (!nfcBinding) throw new Error("NFC Binding not initialized");
+  nfcLog('info', 'Getting firmware version...');
+  try {
+    const result = await nfcBinding.getFirmwareVersion();
+    nfcLog('info', `Firmware: ${result}`);
+    return result;
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    nfcLog('error', msg);
+    throw error;
+  }
+});
+
+ipcMain.handle('runSelfTests', async (event: IpcMainInvokeEvent) => {
+  if (!nfcBinding) throw new Error("NFC Binding not initialized");
+  nfcLog('info', 'Running self-tests...');
+  try {
+    const payload = await nfcBinding.runSelfTests((row: SelfTestResultDto) => {
+      // Stream each result to the renderer as it arrives
+      event.sender.send('nfc:selfTestProgress', row);
+    });
+    if (!isSelfTestReportDto(payload)) {
+      const errMsg = 'Native returned malformed self-test payload';
+      nfcLog('error', errMsg);
+      const e = Object.assign(new Error(errMsg), { code: 'HARDWARE_ERROR' });
+      throw e;
+    }
+    const passed = payload.results.filter(r => r.status === 'success').length;
+    nfcLog('info', `Self-tests complete: ${passed}/5 passed`);
+    payload.results.forEach(r => {
+      const lvl = r.status === 'success' ? 'info' : 'warn';
+      nfcLog(lvl, `  ${r.status.toUpperCase().padEnd(7)} ${r.name}${r.detail ? ' — ' + r.detail : ''}`);
+    });
+    return payload;
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    nfcLog('error', msg);
+    throw error;
+  }
+});
+
+ipcMain.handle('getCardVersion', async () => {
+  if (!nfcBinding) throw new Error("NFC Binding not initialized");
+  nfcLog('info', 'Reading card version...');
+  try {
+    const payload = await nfcBinding.getCardVersion();
+    if (!isCardVersionInfoDto(payload)) {
+      const errMsg = 'Native returned malformed card version payload';
+      nfcLog('error', errMsg);
+      const e = Object.assign(new Error(errMsg), { code: 'HARDWARE_ERROR' });
+      throw e;
+    }
+    nfcLog('info', `Card version — HW: ${payload.hwVersion}  SW: ${payload.swVersion}  UID: ${payload.uidHex}  Storage: ${payload.storage}`);
+    return payload;
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    nfcLog('error', msg);
+    throw error;
+  }
+});
+
 app.on('window-all-closed', () => {
   app.quit();
 });

@@ -5,11 +5,12 @@ interface FirmwareVersionCardProps {
   firmware:    string | null;
   loading:     boolean;
   stale:       boolean;
+  errorMsg:    string | null;
   onGetFirmware: () => void;
 }
 
 export const FirmwareVersionCard = ({
-  isConnected, firmware, loading, stale, onGetFirmware,
+  isConnected, firmware, loading, stale, errorMsg, onGetFirmware,
 }: FirmwareVersionCardProps) => (
   <div className="bg-card border border-edge rounded-2xl p-5 flex flex-col">
 
@@ -33,6 +34,8 @@ export const FirmwareVersionCard = ({
           <div className="h-3 bg-input rounded-lg animate-pulse w-3/4" />
           <div className="h-3 bg-input rounded-lg animate-pulse w-5/12" />
         </div>
+      ) : errorMsg ? (
+        <span className="text-[14px] text-err leading-relaxed">{errorMsg}</span>
       ) : firmware ? (
         <span className="font-mono text-[14px] text-bright leading-relaxed">{firmware}</span>
       ) : (

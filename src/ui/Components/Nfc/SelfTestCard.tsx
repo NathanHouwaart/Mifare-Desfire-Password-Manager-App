@@ -1,9 +1,9 @@
 import {
   Activity, Loader2, Circle,
-  CheckCircle2, XCircle, AlertCircle,
+  CheckCircle2, XCircle, AlertCircle, MinusCircle,
 } from 'lucide-react';
 
-export type TestStatus = 'pending' | 'running' | 'success' | 'failed';
+export type TestStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
 
 export interface TestResult {
   id:     string;
@@ -34,6 +34,7 @@ const testIcon = (status: TestStatus) => {
     case 'running': return <Loader2      className="w-4 h-4 text-accent animate-spin" />;
     case 'success': return <CheckCircle2 className="w-4 h-4 text-ok" />;
     case 'failed':  return <XCircle      className="w-4 h-4 text-err" />;
+    case 'skipped': return <MinusCircle  className="w-4 h-4 text-mid" />;
   }
 };
 
@@ -43,6 +44,7 @@ const testRowCls = (status: TestStatus) => {
     case 'running': return 'bg-accent-soft border-accent-edge';
     case 'success': return 'bg-ok-soft border-ok-edge';
     case 'failed':  return 'bg-err-soft border-err-edge';
+    case 'skipped': return 'bg-well border-edge';
   }
 };
 
@@ -52,6 +54,7 @@ const testLabelCls = (status: TestStatus) => {
     case 'running': return 'text-accent';
     case 'success': return 'text-ok';
     case 'failed':  return 'text-err';
+    case 'skipped': return 'text-mid';
   }
 };
 
