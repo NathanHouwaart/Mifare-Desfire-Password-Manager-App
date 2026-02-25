@@ -197,12 +197,18 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
 
   // ─── render ─────────────────────────────────────────────────────────────────
   return (
-    <div className="relative flex flex-col gap-5 p-6 max-w-[640px] mx-auto">
+    <div className="px-6 py-6 max-w-2xl w-full mx-auto">
 
       {/* Page header */}
-      <div className="flex items-center gap-3 mb-1">
-        <CreditCard className="w-6 h-6 text-accent shrink-0" />
-        <h1 className="text-[22px] font-bold text-hi">Card Management</h1>
+      <div className="flex items-start gap-4 mb-5">
+        <div className="w-11 h-11 rounded-2xl bg-accent-soft border border-accent-edge
+                        flex items-center justify-center shrink-0 mt-0.5">
+          <CreditCard className="w-5 h-5 text-accent" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h1 className="text-2xl font-semibold text-hi leading-tight">Card Management</h1>
+          <p className="text-[14px] text-lo mt-0.5">Manage DESFire card operations</p>
+        </div>
       </div>
 
       {/* NFC not connected warning */}
@@ -219,6 +225,7 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
         </div>
       )}
 
+      <div className="flex flex-col gap-4">
       {/* ── Probe section ── */}
       <Section title="Card Probe">
         <p className="text-[13px] text-lo">
@@ -365,6 +372,7 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
         <Badge state={formatState} label={formatMsg} />
       </Section>
 
+      </div>
       {/* TapCardOverlay */}
       {tapOverlay && (
         <TapCardOverlay message={tapOverlay.message} onCancel={handleCancelTap} />

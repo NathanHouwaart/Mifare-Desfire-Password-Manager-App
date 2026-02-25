@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Components/Sidebar';
 import { LockScreen } from './Components/LockScreen';
@@ -30,6 +30,10 @@ function App() {
     () => (localStorage.getItem('app-theme') as 'dark' | 'light') ?? 'dark'
   );
 
+  // Track whether the window was blurred so the focus handler only acts on
+  // a real wake-from-background, not the initial focus on startup.
+  const wasBlurred = useRef(false);
+
   const toggleTerminalEnabled = () =>
     setTerminalEnabled(prev => {
       const next = !prev;
@@ -42,6 +46,52 @@ function App() {
   useEffect(() => {
     if (path === '/') navigate('/passwords', { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Require PIN on wake ──────────────────────────────────────────────────
+  // When enabled, lock the vault whenever the app window regains focus after
+  // having been blurred (i.e. the user switched away and came back).
+  useEffect(() => {
+    if (!unlocked) return;
+    const onBlur  = () => { wasBlurred.current = true; };
+    const onFocus = () => {
+      if (!wasBlurred.current) return;
+      wasBlurred.current = false;
+      const requirePin = (localStorage.getItem('setting-pin-wake') ?? 'true') === 'true';
+      if (requirePin) setLocking(true);
+    };
+    window.addEventListener('blur',  onBlur);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('blur',  onBlur);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [unlocked]);
+
+  // ── Auto-lock on inactivity ──────────────────────────────────────────────
+  // Reads the current value from localStorage each time the vault is unlocked
+  // so settings changes take effect immediately without a restart.
+  useEffect(() => {
+    if (!unlocked) return;
+    const raw = localStorage.getItem('setting-autolock') ?? '5';
+    if (raw === 'never') return;
+    const ms = parseInt(raw, 10) * 60 * 1000;
+    if (!ms || ms <= 0) return;
+
+    let timer: ReturnType<typeof setTimeout>;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setLocking(true), ms);
+    };
+
+    const events = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'] as const;
+    events.forEach(e => window.addEventListener(e, reset, { passive: true }));
+    reset(); // arm the timer immediately
+
+    return () => {
+      clearTimeout(timer);
+      events.forEach(e => window.removeEventListener(e, reset));
+    };
+  }, [unlocked]);
 
   const toggleTheme = () =>
     setTheme(prev => {

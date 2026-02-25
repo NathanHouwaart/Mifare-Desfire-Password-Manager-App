@@ -234,3 +234,41 @@ export function deleteEntry(id: string): boolean {
 export function wipeVault(): void {
   getDb().exec('DELETE FROM entries');
 }
+
+/** Returns all full rows including encrypted blobs — used by vault:export. */
+export function getAllEntryRows(): EntryRow[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT id, label, url, category,
+           created_at AS createdAt,
+           updated_at AS updatedAt,
+           ciphertext,
+           iv,
+           auth_tag AS authTag
+    FROM   entries
+    ORDER  BY created_at ASC
+  `).all() as EntryRow[];
+}
+
+/**
+ * Inserts a pre-encrypted row verbatim (from a backup import).
+ * Returns true if inserted, false if the entry ID already exists (skipped).
+ */
+export function insertEntryRaw(row: EntryRow): boolean {
+  const db = getDb();
+  try {
+    db.prepare(`
+      INSERT INTO entries
+        (id, label, url, category, created_at, updated_at, ciphertext, iv, auth_tag)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      row.id, row.label, row.url, row.category,
+      row.createdAt, row.updatedAt,
+      row.ciphertext, row.iv, row.authTag,
+    );
+    return true;
+  } catch {
+    // UNIQUE constraint violation — entry already exists; skip silently.
+    return false;
+  }
+}

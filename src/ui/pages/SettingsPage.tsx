@@ -1,5 +1,5 @@
 import { useState, type ReactNode, type ComponentType } from 'react';
-import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X } from 'lucide-react';
+import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2 } from 'lucide-react';
 
 const PIN_HASH_KEY = 'app-pin-hash';
 
@@ -85,26 +85,37 @@ const SelectRow = ({
 );
 
 const ButtonRow = ({
-  label, description, buttonLabel, variant = 'default', onClick,
+  label, description, buttonLabel, variant = 'default', onClick, busy, feedback,
 }: {
   label: string; description?: string; buttonLabel: string;
   variant?: 'default' | 'danger'; onClick: () => void;
+  busy?: boolean;
+  feedback?: { type: 'ok' | 'err'; message: string } | null;
 }) => (
-  <div className="flex items-center justify-between px-5 py-4 gap-4">
-    <div className="flex-1 min-w-0">
-      <p className="text-[16px] font-medium text-hi">{label}</p>
-      {description && <p className="text-[14px] text-lo mt-0.5 leading-snug">{description}</p>}
+  <div className="px-5 py-4 flex flex-col gap-1.5">
+    <div className="flex items-center justify-between gap-4">
+      <div className="flex-1 min-w-0">
+        <p className="text-[16px] font-medium text-hi">{label}</p>
+        {description && <p className="text-[14px] text-lo mt-0.5 leading-snug">{description}</p>}
+      </div>
+      <button
+        onClick={onClick}
+        disabled={busy}
+        className={`shrink-0 px-4 py-2.5 rounded-xl text-[15px] font-medium border flex items-center gap-2
+                    active:scale-95 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed
+                    ${variant === 'danger'
+                      ? 'text-err border-err-edge bg-err-soft hover:opacity-90'
+                      : 'text-accent border-accent-edge bg-accent-soft hover:opacity-90'}`}
+      >
+        {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+        {buttonLabel}
+      </button>
     </div>
-    <button
-      onClick={onClick}
-      className={`shrink-0 px-4 py-2.5 rounded-xl text-[15px] font-medium border
-                  active:scale-95 transition-all duration-100
-                  ${variant === 'danger'
-                    ? 'text-err border-err-edge bg-err-soft hover:opacity-90'
-                    : 'text-accent border-accent-edge bg-accent-soft hover:opacity-90'}`}
-    >
-      {buttonLabel}
-    </button>
+    {feedback && (
+      <p className={`text-[13px] ml-0.5 ${
+        feedback.type === 'ok' ? 'text-ok' : 'text-err'
+      }`}>{feedback.message}</p>
+    )}
   </div>
 );
 
@@ -131,6 +142,11 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [connTimeout,    setConnTimeout]    = useState(() => ls   ('setting-conn-timeout',     '10'));
   const [retryAttempts,  setRetryAttempts]  = useState(() => ls   ('setting-retries',          '3'));
 
+  const [exportBusy, setExportBusy] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [exportFeedback, setExportFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+  const [importFeedback, setImportFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
   };
@@ -141,6 +157,40 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const handleChangePIN = () => {
     localStorage.removeItem(PIN_HASH_KEY);
     alert('PIN cleared. You will be asked to set a new PIN when you next lock the vault.');
+  };
+
+  const handleExport = async () => {
+    setExportBusy(true); setExportFeedback(null);
+    try {
+      const res = await window.electron['vault:export']();
+      if (res.success) {
+        setExportFeedback({ type: 'ok', message: `Exported ${res.count} entr${res.count === 1 ? 'y' : 'ies'} successfully.` });
+      } else {
+        if (res.error) setExportFeedback({ type: 'err', message: res.error });
+      }
+    } catch (e) {
+      setExportFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setExportBusy(false);
+      setTimeout(() => setExportFeedback(null), 5000);
+    }
+  };
+
+  const handleImport = async () => {
+    setImportBusy(true); setImportFeedback(null);
+    try {
+      const res = await window.electron['vault:import']();
+      if (res.success) {
+        setImportFeedback({ type: 'ok', message: `Imported ${res.imported} entr${res.imported === 1 ? 'y' : 'ies'}, skipped ${res.skipped} duplicate${res.skipped === 1 ? '' : 's'}.` });
+      } else {
+        if (res.error) setImportFeedback({ type: 'err', message: res.error });
+      }
+    } catch (e) {
+      setImportFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setImportBusy(false);
+      setTimeout(() => setImportFeedback(null), 6000);
+    }
   };
 
   const handleClearData = () => {
@@ -379,16 +429,20 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
               <ButtonRow
                 label="Export Vault"
                 description="Save an encrypted backup of your passwords"
-                buttonLabel="Export"
-                onClick={() => alert('Export not yet implemented.')}
+                buttonLabel={exportBusy ? 'Exporting…' : 'Export'}
+                busy={exportBusy}
+                feedback={exportFeedback}
+                onClick={handleExport}
               />
             )}
             {show('Import Vault', 'Restore passwords from an encrypted backup') && (
               <ButtonRow
                 label="Import Vault"
                 description="Restore passwords from an encrypted backup"
-                buttonLabel="Import"
-                onClick={() => alert('Import not yet implemented.')}
+                buttonLabel={importBusy ? 'Importing…' : 'Import'}
+                busy={importBusy}
+                feedback={importFeedback}
+                onClick={handleImport}
               />
             )}
             {show('App Version', '0.1.0') && <InfoRow label="App Version" value="0.1.0" />}

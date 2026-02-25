@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog, safeStorage, clipboard } from 'electron'
 import { SerialPort } from 'serialport';
 import fs from 'fs';
 import path from 'node:path';
@@ -100,6 +100,9 @@ app.on('ready', () => {
 
   // Allow the renderer to abort any in-progress card-wait polling loop.
   ipcMain.handle('nfc:cancel', () => { cancelCardWait(); });
+
+  // Clear the system clipboard from the main process (no focus restriction).
+  ipcMain.handle('clipboard:clear', () => { clipboard.writeText(''); });
 
   // Forward all C++ library logs to the in-app debug terminal
   nfcBinding.setLogCallback((level: string, message: string) => {

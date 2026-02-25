@@ -28,9 +28,14 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'vault:createEntry':  (params: EntryCreateDto) => ipcInvoke('vault:createEntry', params),
     'vault:updateEntry':  (id: string, params: EntryUpdateDto) => ipcInvoke('vault:updateEntry', id, params),
     'vault:deleteEntry':  (id: string) => ipcInvoke('vault:deleteEntry', id),
+    'vault:export':       () => ipcInvoke('vault:export'),
+    'vault:import':       () => ipcInvoke('vault:import'),
 
     // Cancel any in-progress card-wait operation
     'nfc:cancel': () => ipcInvoke('nfc:cancel'),
+
+    // Clear the system clipboard via the main process (no focus restriction)
+    'clipboard:clear': () => ipcInvoke('clipboard:clear'),
 } satisfies Window["electron"]);
 
 

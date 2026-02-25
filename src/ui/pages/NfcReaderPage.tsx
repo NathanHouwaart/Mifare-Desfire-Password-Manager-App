@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useCallback } from 'react';
+﻿import { useState, useEffect, useCallback, useRef } from 'react';
 import { Cpu, Terminal } from 'lucide-react';
 import { ConnectionCard }     from '../Components/Nfc/ConnectionCard';
 import { FirmwareVersionCard } from '../Components/Nfc/FirmwareVersionCard';
@@ -83,6 +83,9 @@ export const NfcReaderPage = ({
     }
   }, [isConnected]);
 
+  // Only trigger auto-connect once on mount.
+  const autoConnectDoneRef = useRef(false);
+
   /* â”€â”€ COM port helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const fetchPorts = useCallback(async () => {
     setPortsLoading(true);
@@ -100,24 +103,64 @@ export const NfcReaderPage = ({
     }
   }, []);
 
-  useEffect(() => { fetchPorts(); }, [fetchPorts]);
+  useEffect(() => {
+    // On mount: fetch ports, then auto-connect if the setting is on.
+    // Guard: skip entirely if the reader is already connected (e.g. after a
+    // lock/unlock cycle that re-mounts this page without disconnecting).
+    const run = async () => {
+      await fetchPorts();
+      if (autoConnectDoneRef.current) return;
+      autoConnectDoneRef.current = true;
+      if (isConnected) return;                          // already up — don't reconnect
+      if ((localStorage.getItem('setting-autoconnect') ?? 'false') !== 'true') return;
+      const lastPort = localStorage.getItem('setting-last-port');
+      if (!lastPort) return;
+      setStatusMsg('Auto-connecting to ' + lastPort + '…');
+      await connectWithRetry(lastPort);
+    };
+    run();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const handleConnect = async () => {
-    if (!port) return;
-    try {
-      setStatusMsg('Connectingâ€¦');
-      const result = await window.electron.connect(port);
-      setStatusMsg(result);
-      onConnectionChange(true);
-    } catch (error: unknown) {
-      setStatusMsg('Error: ' + (error instanceof Error ? error.message : String(error)));
-      onConnectionChange(false);
+  /** Core connection attempt with per-attempt timeout and configurable retries. */
+  const connectWithRetry = useCallback(async (targetPort: string) => {
+    const timeoutSecs = parseInt(localStorage.getItem('setting-conn-timeout') ?? '10', 10);
+    const maxRetries  = parseInt(localStorage.getItem('setting-retries')      ?? '3',  10);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const label = maxRetries > 0 ? ' (' + (attempt + 1) + '/' + (maxRetries + 1) + ')' : '';
+      setStatusMsg('Connecting' + label + '…');
+      try {
+        const result = await Promise.race<string>([
+          window.electron.connect(targetPort),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Connection timed out')), timeoutSecs * 1000)
+          ),
+        ]);
+        localStorage.setItem('setting-last-port', targetPort);
+        setStatusMsg(result);
+        onConnectionChange(true);
+        return;
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (attempt < maxRetries) {
+          setStatusMsg('Failed: ' + msg + ' — retrying in 1 s… (' + (attempt + 1) + '/' + (maxRetries + 1) + ')');
+          await new Promise(r => setTimeout(r, 1000));
+        } else {
+          setStatusMsg('Error: ' + msg);
+          onConnectionChange(false);
+        }
+      }
     }
-  };
+  }, [onConnectionChange]);
+
+  const handleConnect = useCallback(async () => {
+    if (!port) return;
+    await connectWithRetry(port);
+  }, [port, connectWithRetry]);
 
   const handleDisconnect = async () => {
     try {
-      setStatusMsg('Disconnectingâ€¦');
+      setStatusMsg('Disconnecting…');
       const result = await window.electron.disconnect();
       setStatusMsg(result ? 'Disconnected successfully' : 'Disconnect returned false');
       onConnectionChange(false);
@@ -125,7 +168,6 @@ export const NfcReaderPage = ({
       setStatusMsg('Error: ' + (error instanceof Error ? error.message : String(error)));
     }
   };
-
   /* â”€â”€ Real IPC handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const handleGetFirmware = async () => {
     setFirmwareLoading(true);

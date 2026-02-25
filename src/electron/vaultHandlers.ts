@@ -12,8 +12,9 @@
  * Must only run in the main process.
  */
 
-import { ipcMain, IpcMainInvokeEvent } from 'electron';
+import { ipcMain, IpcMainInvokeEvent, dialog, BrowserWindow } from 'electron';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { NfcCppBinding } from './bindings.js';
 import { getMachineSecret } from './main.js';
 import {
@@ -30,6 +31,9 @@ import {
   insertEntry,
   updateEntry,
   deleteEntry,
+  getAllEntryRows,
+  insertEntryRaw,
+  EntryRow,
 } from './vault.js';
 import { beginCardWait } from './nfcCancel.js';
 
@@ -223,4 +227,101 @@ export function registerVaultHandlers(
       return deleted;
     }
   );
+
+  // ── vault:export ────────────────────────────────────────────────────────────
+  // Dumps all encrypted rows to a JSON file chosen by the user.
+  // No card tap needed — the blobs are already encrypted at rest.
+  ipcMain.handle('vault:export', async () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title:       'Export Vault Backup',
+      defaultPath: `vault-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [
+        { name: 'JSON Backup', extensions: ['json'] },
+        { name: 'All Files',   extensions: ['*']    },
+      ],
+    });
+    if (canceled || !filePath) return { success: false };
+
+    const rows = getAllEntryRows();
+    const payload = {
+      version:    1,
+      appVersion: '0.1.0',
+      exportedAt: Date.now(),
+      note:       'Restore requires the same device and the same NFC card.',
+      entries:    rows.map(r => ({
+        id:         r.id,
+        label:      r.label,
+        url:        r.url,
+        category:   r.category,
+        createdAt:  r.createdAt,
+        updatedAt:  r.updatedAt,
+        ciphertext: r.ciphertext.toString('base64'),
+        iv:         r.iv.toString('base64'),
+        authTag:    r.authTag.toString('base64'),
+      })),
+    };
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+    const n = rows.length;
+    log('info', `vault:export — exported ${n} entr${n === 1 ? 'y' : 'ies'} to ${filePath}`);
+    return { success: true, path: filePath, count: n };
+  });
+
+  // ── vault:import ────────────────────────────────────────────────────────────
+  // Reads a JSON backup, validates it, and bulk-inserts missing entries.
+  // Entries whose IDs already exist in the vault are skipped (safe merge).
+  ipcMain.handle('vault:import', async () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title:      'Import Vault Backup',
+      filters: [
+        { name: 'JSON Backup', extensions: ['json'] },
+        { name: 'All Files',   extensions: ['*']    },
+      ],
+      properties: ['openFile'],
+    });
+    if (canceled || filePaths.length === 0) return { success: false };
+
+    let raw: string;
+    try   { raw = fs.readFileSync(filePaths[0], 'utf-8'); }
+    catch (e) {
+      return { success: false, error: 'Could not read file: ' + (e instanceof Error ? e.message : String(e)) };
+    }
+
+    let parsed: unknown;
+    try   { parsed = JSON.parse(raw); }
+    catch { return { success: false, error: 'File is not valid JSON.' }; }
+
+    const obj = parsed as Record<string, unknown>;
+    if (!obj || !Array.isArray(obj.entries)) {
+      return { success: false, error: 'Invalid backup — missing entries array.' };
+    }
+    if (typeof obj.version === 'number' && obj.version !== 1) {
+      return { success: false, error: `Unsupported backup version: ${obj.version}.` };
+    }
+
+    let imported = 0;
+    let skipped  = 0;
+    for (const e of obj.entries as unknown[]) {
+      if (!e || typeof e !== 'object') { skipped++; continue; }
+      const entry = e as Record<string, unknown>;
+      try {
+        const row: EntryRow = {
+          id:         String(entry.id        ?? ''),
+          label:      String(entry.label     ?? ''),
+          url:        String(entry.url       ?? ''),
+          category:   String(entry.category  ?? ''),
+          createdAt:  Number(entry.createdAt ?? 0),
+          updatedAt:  Number(entry.updatedAt ?? 0),
+          ciphertext: Buffer.from(String(entry.ciphertext ?? ''), 'base64'),
+          iv:         Buffer.from(String(entry.iv         ?? ''), 'base64'),
+          authTag:    Buffer.from(String(entry.authTag    ?? ''), 'base64'),
+        };
+        if (!row.id || !row.label || row.ciphertext.length === 0) { skipped++; continue; }
+        insertEntryRaw(row) ? imported++ : skipped++;
+      } catch { skipped++; }
+    }
+    log('info', `vault:import — imported ${imported}, skipped ${skipped}`);
+    return { success: true, imported, skipped };
+  });
 }

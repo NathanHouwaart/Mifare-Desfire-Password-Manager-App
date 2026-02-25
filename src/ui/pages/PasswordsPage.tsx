@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
   Search, Plus, Eye, EyeOff, Copy, Check,
   KeyRound, Trash2, Pencil, X, RefreshCw, ArrowUpDown,
-  Shield, AlertCircle, Loader2,
+  Shield, AlertCircle, Loader2, AtSign,
 } from 'lucide-react';
 import { TapCardOverlay } from '../Components/TapCardOverlay';
 
@@ -99,7 +99,7 @@ const ROW_GRID =
   'grid items-center gap-x-4 ' +
   'grid-cols-[2.5rem_minmax(0,1fr)_12rem] ' +
   'sm:grid-cols-[2.5rem_minmax(0,2fr)_minmax(0,1.5fr)_12rem] sm:gap-x-5 ' +
-  'md:grid-cols-[2.5rem_minmax(0,2fr)_minmax(0,1.5fr)_5.5rem_12rem] md:gap-x-6';
+  'md:grid-cols-[2.5rem_minmax(0,2fr)_minmax(0,1.5fr)_8rem_12rem] md:gap-x-6';
 
 // ── Shared primitives ────────────────────────────────────────────────────────
 
@@ -313,20 +313,29 @@ const DeleteDialog = ({
 // ── Password Row ─────────────────────────────────────────────────────────────
 
 interface PasswordCardProps {
-  entry:          EntryListItemDto;
-  decrypted:      EntryPayloadDto | null;
-  isRevealed:     boolean;
-  copiedId:       string | null;
-  onRevealToggle: () => void;
-  onCopyClick:    () => void;
-  onEdit:         () => void;
-  onDelete:       () => void;
-  theme:          'dark' | 'light';
+  entry:             EntryListItemDto;
+  decrypted:         EntryPayloadDto | null;
+  isRevealed:        boolean;
+  copiedId:          string | null;
+  copiedUsernameId:  string | null;
+  revealCopiedField: 'user' | 'pw' | null;
+  /** 0–1 fraction of reveal time remaining; null = no auto-hide timer */
+  revealProgress:    number | null;
+  revealSecsLeft:    number | null;
+  onRevealToggle:    () => void;
+  onCopyClick:       () => void;
+  onCopyUsernameClick: () => void;
+  onCopyUsername:    () => void;
+  onCopyPassword:    () => void;
+  onEdit:            () => void;
+  onDelete:          () => void;
+  theme:             'dark' | 'light';
 }
 
 const PasswordCard = ({
-  entry, decrypted, isRevealed, copiedId,
-  onRevealToggle, onCopyClick, onEdit, onDelete, theme,
+  entry, decrypted, isRevealed, copiedId, copiedUsernameId, revealCopiedField,
+  revealProgress, revealSecsLeft,
+  onRevealToggle, onCopyClick, onCopyUsernameClick, onCopyUsername, onCopyPassword, onEdit, onDelete, theme,
 }: PasswordCardProps) => (
   <div className="border-b border-edge last:border-b-0 hover:bg-input transition-colors duration-100">
 
@@ -358,7 +367,7 @@ const PasswordCard = ({
       </div>
 
       {/* Username — masked until decrypted */}
-      <div className="min-w-0 hidden sm:block">
+      <div className="min-w-0 hidden sm:flex sm:items-center sm:border-l sm:border-edge/40 sm:pl-2">
         <span
           className="inline-flex items-center bg-input border border-edge rounded-md
                      px-2 py-0.5 max-w-full"
@@ -371,12 +380,12 @@ const PasswordCard = ({
       </div>
 
       {/* Last edited */}
-      <div className="hidden md:block">
+      <div className="hidden md:block md:border-l md:border-edge/40 md:pl-2">
         <p className="text-[14px] text-mid">{formatDate(entry.updatedAt)}</p>
       </div>
 
       {/* Actions */}
-      <div className="flex items-center gap-0.5 justify-end">
+      <div className="flex items-center gap-0.5 justify-end border-l border-edge/40 pl-2">
         <button
           onClick={onRevealToggle}
           aria-label={isRevealed ? 'Hide password' : 'Show password'}
@@ -392,6 +401,24 @@ const PasswordCard = ({
           {isRevealed ? <EyeOff className="w-[17px] h-[17px]" /> : <Eye className="w-[17px] h-[17px]" />}
         </button>
 
+        {/* Copy username */}
+        <button
+          onClick={onCopyUsernameClick}
+          aria-label={copiedUsernameId === entry.id ? 'Username copied' : 'Copy username'}
+          title={copiedUsernameId === entry.id ? 'Username copied' : 'Copy username'}
+          className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-100
+                      active:scale-90 focus-visible:outline-none focus-visible:ring-2
+                      focus-visible:ring-accent-edge
+                      ${copiedUsernameId === entry.id
+                        ? 'text-ok bg-ok-soft'
+                        : 'text-mid hover:text-hi hover:bg-well'}`}
+        >
+          {copiedUsernameId === entry.id
+            ? <Check className="w-[17px] h-[17px]" />
+            : <AtSign className="w-[17px] h-[17px]" />}
+        </button>
+
+        {/* Copy password */}
         <button
           onClick={onCopyClick}
           aria-label={copiedId === entry.id ? 'Password copied' : 'Copy password'}
@@ -407,9 +434,11 @@ const PasswordCard = ({
             ? <Check className="w-[17px] h-[17px]" />
             : <Copy  className="w-[17px] h-[17px]" />}
         </button>
-        {copiedId === entry.id && (
+        {(copiedUsernameId === entry.id || copiedId === entry.id) && (
           <span className="text-[12px] text-ok font-semibold shrink-0
-                           animate-[fadeSlideUp_0.15s_ease-out]">Copied!</span>
+                           animate-[fadeSlideUp_0.15s_ease-out]">
+            {copiedUsernameId === entry.id ? 'Username copied!' : 'Copied!'}
+          </span>
         )}
 
         <ActionBtn onClick={onEdit}   title="Edit entry"><Pencil className="w-[17px] h-[17px]" /></ActionBtn>
@@ -420,19 +449,76 @@ const PasswordCard = ({
     {/* ── Revealed credentials panel ── */}
     {isRevealed && decrypted && (
       <div className="px-5 pb-4 animate-[fadeSlideUp_0.15s_ease-out]" aria-live="polite">
-        <div className="flex flex-col gap-2 bg-well border border-accent-edge rounded-xl px-4 py-3">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-1 bg-well border border-accent-edge rounded-xl px-4 py-3">
+          <button
+            onClick={onCopyUsername}
+            title="Click to copy username"
+            className="flex items-center gap-2 group w-full text-left rounded-lg
+                       hover:bg-accent-soft/30 -mx-1 px-1 py-1
+                       transition-colors duration-100
+                       focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-edge"
+          >
             <span className="text-[12px] text-lo font-semibold w-20 shrink-0">USERNAME</span>
             <p className="font-mono text-[14px] text-hi select-all flex-1 break-all">{decrypted.username}</p>
-          </div>
-          <div className="flex items-center gap-2">
+            <span className="shrink-0 flex items-center gap-1 justify-end">
+              {revealCopiedField === 'user'
+                ? <>
+                    <Check className="w-3.5 h-3.5 text-ok" />
+                    <span className="text-[12px] text-ok font-semibold animate-[fadeSlideUp_0.15s_ease-out]">Copied!</span>
+                  </>
+                : <Copy className="w-3.5 h-3.5 text-dim opacity-0 group-hover:opacity-100 transition-opacity" />}
+            </span>
+          </button>
+          <button
+            onClick={onCopyPassword}
+            title="Click to copy password"
+            className="flex items-center gap-2 group w-full text-left rounded-lg
+                       hover:bg-accent-soft/30 -mx-1 px-1 py-1
+                       transition-colors duration-100
+                       focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent-edge"
+          >
             <span className="text-[12px] text-lo font-semibold w-20 shrink-0">PASSWORD</span>
             <p className="font-mono text-[14px] text-hi select-all flex-1 break-all">{decrypted.password}</p>
-          </div>
+            <span className="shrink-0 flex items-center gap-1 justify-end">
+              {revealCopiedField === 'pw'
+                ? <>
+                    <Check className="w-3.5 h-3.5 text-ok" />
+                    <span className="text-[12px] text-ok font-semibold animate-[fadeSlideUp_0.15s_ease-out]">Copied!</span>
+                  </>
+                : <Copy className="w-3.5 h-3.5 text-dim opacity-0 group-hover:opacity-100 transition-opacity" />}
+            </span>
+          </button>
           {decrypted.notes && (
             <div className="flex items-start gap-2 pt-1 border-t border-edge mt-1">
               <span className="text-[12px] text-lo font-semibold w-20 shrink-0 mt-px">NOTES</span>
               <p className="text-[14px] text-mid flex-1 whitespace-pre-wrap">{decrypted.notes}</p>
+            </div>
+          )}
+
+          {/* ── Countdown bar ── */}
+          {revealProgress !== null && revealSecsLeft !== null && (
+            <div className="pt-2 mt-1 border-t border-edge/50">
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-1.5 rounded-full bg-edge overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-[width] duration-[80ms] ease-linear
+                                ${
+                                  revealProgress > 0.5 ? 'bg-accent-solid'
+                                  : revealProgress > 0.25 ? 'bg-warn'
+                                  : 'bg-err'
+                                }`}
+                    style={{ width: `${revealProgress * 100}%` }}
+                  />
+                </div>
+                <span className={`text-[11px] font-mono font-semibold shrink-0 w-6 text-right
+                                  ${
+                                    revealProgress > 0.5 ? 'text-accent'
+                                    : revealProgress > 0.25 ? 'text-warn'
+                                    : 'text-err'
+                                  }`}>
+                  {revealSecsLeft}s
+                </span>
+              </div>
             </div>
           )}
         </div>
@@ -450,7 +536,11 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
 
   const [revealedPayload, setRevealedPayload] = useState<EntryPayloadDto | null>(null);
   const [revealedId,      setRevealedId]      = useState<string | null>(null);
-  const [copiedId,       setCopiedId]       = useState<string | null>(null);
+  const [copiedId,           setCopiedId]           = useState<string | null>(null);
+  const [copiedUsernameId,   setCopiedUsernameId]   = useState<string | null>(null);
+  const [copiedRevealField,  setCopiedRevealField]  = useState<{ id: string; field: 'user' | 'pw' } | null>(null);
+  const [revealProgress,     setRevealProgress]     = useState<number | null>(null);
+  const [revealSecsLeft,     setRevealSecsLeft]     = useState<number | null>(null);
 
   const [search,         setSearch]         = useState('');
   const [sort,           setSort]           = useState<SortKey>('name-asc');
@@ -463,11 +553,6 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     'new' | { entry: EntryListItemDto; decrypted: EntryPayloadDto } | null
   >(null);
   const [deleteTarget, setDeleteTarget] = useState<EntryListItemDto | null>(null);
-
-  const revealDuration = useMemo(
-    () => parseInt(localStorage.getItem('setting-reveal-duration') ?? '5', 10),
-    [],
-  );
 
   const cancelRef = useRef(false);
 
@@ -484,17 +569,49 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     load();
   }, []);
 
-  // ── Auto-hide revealed entry ─────────────────────────────────────────────
-  // When the timer fires, clear both the revealed state AND the decrypted
-  // payload so the next reveal always requires a fresh card tap.
+  // ── Auto-hide + countdown bar ────────────────────────────────────────────
+  // Read duration fresh on each reveal so settings changes take effect immediately.
+  // Drives both the auto-hide timeout and the animated countdown bar.
   useEffect(() => {
-    if (!revealedId || revealDuration <= 0) return;
-    const t = setTimeout(() => {
+    if (!revealedId) {
+      setRevealProgress(null);
+      setRevealSecsLeft(null);
+      return;
+    }
+    const dur = parseInt(localStorage.getItem('setting-reveal-duration') ?? '5', 10);
+    if (dur <= 0) {
+      // 0 = "until hidden manually" — no bar, no auto-hide
+      setRevealProgress(null);
+      setRevealSecsLeft(null);
+      return;
+    }
+    const total = dur * 1000;
+    const start = Date.now();
+    setRevealProgress(1);
+    setRevealSecsLeft(dur);
+
+    // Auto-hide timeout
+    const hideTimer = setTimeout(() => {
       setRevealedId(null);
       setRevealedPayload(null);
-    }, revealDuration * 1000);
-    return () => clearTimeout(t);
-  }, [revealedId, revealDuration]);
+    }, total);
+
+    // Countdown interval (~50 ms ticks for smooth animation)
+    const ticker = setInterval(() => {
+      const elapsed  = Date.now() - start;
+      const fraction = Math.max(0, 1 - elapsed / total);
+      setRevealProgress(fraction);
+      setRevealSecsLeft(Math.ceil(Math.max(0, total - elapsed) / 1000));
+      if (fraction <= 0) clearInterval(ticker);
+    }, 50);
+
+    return () => {
+      clearTimeout(hideTimer);
+      clearInterval(ticker);
+      setRevealProgress(null);
+      setRevealSecsLeft(null);
+    };
+  }, [revealedId]);
 
   // ── withTap ─────────────────────────────────────────────────────────────
   const withTap = useCallback(async <T,>(label: string, fn: () => Promise<T>): Promise<T> => {
@@ -541,6 +658,40 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     } catch { /* tapError already set */ }
   }, [revealedId, withTap]);
 
+  // ── Clipboard helper ───────────────────────────────────────────────────
+  // Writes text to clipboard, then arms the auto-clear timer if configured.
+  // Logs to console so you can verify the setting is being read at the right time.
+  const copyToClipboard = useCallback(async (text: string) => {
+    // Log first — before any async work — so we know the function was reached.
+    const autoClear = localStorage.getItem('setting-autoclear') === 'true';
+    const delay     = parseInt(localStorage.getItem('setting-autoclear-delay') ?? '30', 10);
+    console.log('[clipboard] copyToClipboard called — autoClear =', autoClear,
+      '| raw =', JSON.stringify(localStorage.getItem('setting-autoclear')),
+      '| delay =', delay + 's');
+
+    try {
+      await navigator.clipboard.writeText(text);
+      console.log('[clipboard] write succeeded');
+    } catch (e) {
+      console.warn('[clipboard] write failed:', e);
+      throw e; // propagate so the caller can show an error
+    }
+
+    if (autoClear) {
+      console.log(`[clipboard] auto-clear armed — will fire in ${delay}s`);
+      setTimeout(() => {
+        console.log('[clipboard] auto-clear firing now');
+        // Use the main-process IPC to clear — navigator.clipboard.writeText()
+        // throws NotAllowedError when the document is not focused (Electron sandbox).
+        window.electron['clipboard:clear']()
+          .then(() => console.log('[clipboard] auto-clear succeeded'))
+          .catch(e  => console.warn('[clipboard] auto-clear failed:', e));
+      }, delay * 1000);
+    } else {
+      console.log('[clipboard] auto-clear is OFF — clipboard will not be cleared');
+    }
+  }, []);
+
   // ── Copy ─────────────────────────────────────────────────────────────────
   // Copy is free only while the entry is already revealed (no card removed
   // between reveal and copy). Any other copy requires a card tap; the
@@ -556,11 +707,39 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
       } catch { return; }
     }
     if (payload) {
-      await navigator.clipboard.writeText(payload.password);
+      await copyToClipboard(payload.password);
       setCopiedId(entry.id);
       setTimeout(() => setCopiedId(null), 1500);
     }
-  }, [revealedId, revealedPayload, withTap]);
+  }, [revealedId, revealedPayload, withTap, copyToClipboard]);
+
+  // ── Copy username (main row) ─────────────────────────────────────────────
+  const handleCopyUsernameClick = useCallback(async (entry: EntryListItemDto) => {
+    let payload: EntryPayloadDto | null =
+      revealedId === entry.id ? revealedPayload : null;
+    if (!payload) {
+      try {
+        await withTap(`to copy username for "${entry.label}"`, async () => {
+          payload = await window.electron['vault:getEntry'](entry.id);
+        });
+      } catch { return; }
+    }
+    if (payload) {
+      await copyToClipboard(payload.username);
+      setCopiedUsernameId(entry.id);
+      setTimeout(() => setCopiedUsernameId(null), 1500);
+    }
+  }, [revealedId, revealedPayload, withTap, copyToClipboard]);
+
+  // ── Inline reveal-panel copy (username or password, no extra card tap) ──
+  const handleCopyRevealField = useCallback(async (field: 'user' | 'pw') => {
+    if (!revealedId || !revealedPayload) return;
+    const id   = revealedId;
+    const text = field === 'user' ? revealedPayload.username : revealedPayload.password;
+    await copyToClipboard(text);
+    setCopiedRevealField({ id, field });
+    setTimeout(() => setCopiedRevealField(null), 1500);
+  }, [revealedId, revealedPayload, copyToClipboard]);
 
   // ── Edit (always requires a card tap) ───────────────────────────────────
   const handleEdit = useCallback(async (entry: EntryListItemDto) => {
@@ -607,8 +786,10 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
       await window.electron['vault:deleteEntry'](id);
       setEntries(prev => prev.filter(e => e.id !== id));
       if (revealedId === id) { setRevealedId(null); setRevealedPayload(null); }
+      if (copiedRevealField?.id === id) setCopiedRevealField(null);
+      if (copiedUsernameId === id) setCopiedUsernameId(null);
     } catch (err) { setTapError(errMsg(err)); }
-  }, [deleteTarget, revealedId]);
+  }, [deleteTarget, revealedId, copiedRevealField, copiedUsernameId]);
 
   // ── Derived ──────────────────────────────────────────────────────────────
   const categories = useMemo(() => {
@@ -759,9 +940,9 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
               <div className={`${ROW_GRID} px-5 py-3 border-b border-edge bg-well/50`}>
                 <div />
                 <p className="text-[12px] font-semibold text-lo uppercase tracking-widest">Service</p>
-                <p className="text-[12px] font-semibold text-lo uppercase tracking-widest hidden sm:block">Username</p>
-                <p className="text-[12px] font-semibold text-lo uppercase tracking-widest hidden md:block">Last Edited</p>
-                <p className="text-[12px] font-semibold text-lo uppercase tracking-widest text-right">Actions</p>
+                <p className="text-[12px] font-semibold text-lo uppercase tracking-widest hidden sm:block sm:border-l sm:border-edge/40 sm:pl-2">Username</p>
+                <p className="text-[12px] font-semibold text-lo uppercase tracking-widest hidden md:block md:border-l md:border-edge/40 md:pl-2">Last Edited</p>
+                <p className="text-[12px] font-semibold text-lo uppercase tracking-widest border-l border-edge/40 pl-2">Actions</p>
               </div>
               {filtered.map(entry => (
                 <PasswordCard
@@ -770,8 +951,15 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
                   decrypted={revealedId === entry.id ? revealedPayload : null}
                   isRevealed={revealedId === entry.id}
                   copiedId={copiedId}
+                  copiedUsernameId={copiedUsernameId}
+                  revealCopiedField={copiedRevealField?.id === entry.id ? copiedRevealField.field : null}
+                  revealProgress={revealedId === entry.id ? revealProgress : null}
+                  revealSecsLeft={revealedId === entry.id ? revealSecsLeft : null}
                   onRevealToggle={() => handleRevealToggle(entry)}
                   onCopyClick={() => handleCopyClick(entry)}
+                  onCopyUsernameClick={() => handleCopyUsernameClick(entry)}
+                  onCopyUsername={() => handleCopyRevealField('user')}
+                  onCopyPassword={() => handleCopyRevealField('pw')}
                   onEdit={() => handleEdit(entry)}
                   onDelete={() => setDeleteTarget(entry)}
                   theme={theme}
