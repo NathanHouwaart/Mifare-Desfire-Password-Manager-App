@@ -1,0 +1,9 @@
+﻿{
+    "name":  "com.securepass.bridge",
+    "description":  "SecurePass NFC Password Manager bridge",
+    "path":  "C:\\Users\\Nathan\\Documents\\PasswordManagerApp\\native-host\\run-host.bat",
+    "type":  "stdio",
+    "allowed_extensions":  [
+                               "securepass@localhost"
+                           ]
+}
