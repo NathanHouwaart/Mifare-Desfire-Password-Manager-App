@@ -1,7 +1,8 @@
 {
-  "name": "electron-template",
+  "name": "securepass",
+  "description": "NFC-backed password manager",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -17,7 +18,9 @@
     "preview": "vite preview",
     "transpile:electron": "tsc --project src/electron/tsconfig.json",
     "dist:mac": "npm run transpile:electron && npm run build && electron-builder --mac --arm64",
-    "dist:win": "npm run transpile:electron && npm run build && electron-builder --win --x64",
+    "build:host": "npx @yao-pkg/pkg native-host/host.js --target node18-win-x64 --output native-host/host.exe",
+    "download:cp210x": "node scripts/download-cp210x.js",
+    "dist:win": "npm run download:cp210x && npm run build:host && npm run transpile:electron && npm run build && electron-builder --win --x64",
     "dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
@@ -45,6 +48,7 @@
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.3",
+    "@yao-pkg/pkg": "^5.16.1",
     "cross-env": "^10.1.0",
     "electron": "^38.2.2",
     "electron-builder": "^26.0.12",
@@ -55,6 +59,7 @@
     "globals": "^16.4.0",
     "node-gyp": "^11.4.2",
     "npm-run-all": "^4.1.5",
+    "rcedit": "^5.0.2",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.44.0",
     "vite": "^7.1.7",

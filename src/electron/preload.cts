@@ -38,6 +38,10 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'clipboard:clear': () => ipcInvoke('clipboard:clear'),
     // Read the system clipboard via the main process (no focus restriction)
     'clipboard:read':  () => ipcInvoke('clipboard:read'),
+
+    // Browser extension helpers
+    'extension:open-folder':          () => ipcInvoke('extension:open-folder'),
+    'extension:reload-registration':  () => ipcInvoke('extension:reload-registration'),
 } satisfies Window["electron"]);
 
 

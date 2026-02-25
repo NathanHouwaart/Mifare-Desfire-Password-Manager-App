@@ -141,6 +141,12 @@ type IPCHandlers = {
   'vault:export': () => Promise<VaultExportResultDto>;
   /** Imports entries from a JSON backup file, merging with existing vault. No card needed. */
   'vault:import': () => Promise<VaultImportResultDto>;
+
+  // ── Browser extension helpers ────────────────────────────────────────
+  /** Opens the bundled extension folder in Windows Explorer. */
+  'extension:open-folder': () => Promise<void>;
+  /** Re-runs the native messaging host registration (rewrites bat + registry keys). */
+  'extension:reload-registration': () => Promise<{ ok: boolean; error?: string }>;
 };
 
 // 2) helpers derived from IPCHandlers

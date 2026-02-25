@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog, safeStorage, clipboard } from 'electron'
+import { app, BrowserWindow, ipcMain, IpcMainInvokeEvent, dialog, safeStorage, clipboard, shell, nativeImage } from 'electron'
 import { SerialPort } from 'serialport';
 import fs from 'fs';
 import path from 'node:path';
@@ -25,6 +25,8 @@ process.on('unhandledRejection', (reason, promise) => {
 
 let mainWindow: BrowserWindow | null = null;
 let nfcBinding: NfcCppBinding | null = null;
+const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twice from 100%
+const ZOOM_SHORTCUT_KEYS = new Set(['+', '=', '-', '_', '0', 'Add', 'Subtract', 'NumpadAdd', 'NumpadSubtract']);
 
 /**
  * Tracks the port the C++ binding currently has open.
@@ -92,6 +94,17 @@ function nfcLog(level: 'info' | 'warn' | 'error', message: string) {
   sendLogToRenderer(level, message);
 }
 
+function applyLockedZoom(win: BrowserWindow | null) {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.setZoomFactor(LOCKED_ZOOM_FACTOR);
+}
+
+function isZoomInput(input: Electron.Input): boolean {
+  if (!(input.control || input.meta)) return false;
+  if (input.type === 'mouseWheel') return true; // Ctrl/Cmd + wheel zoom
+  return ZOOM_SHORTCUT_KEYS.has(input.key);
+}
+
 app.on('ready', () => {
   console.log('[MAIN.TS] App ready event fired');
 
@@ -123,6 +136,23 @@ app.on('ready', () => {
   // Read the current clipboard text from the main process (no focus restriction).
   ipcMain.handle('clipboard:read', () => clipboard.readText());
 
+  // Browser extension helpers
+  ipcMain.handle('extension:open-folder', async () => {
+    const extDir = app.isPackaged
+      ? path.join(process.resourcesPath, 'extension')
+      : path.resolve(app.getAppPath(), 'extension');
+    await shell.openPath(extDir);
+  });
+
+  ipcMain.handle('extension:reload-registration', () => {
+    try {
+      registerNativeHost((msg) => nfcLog('info', msg));
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+
   // Forward all C++ library logs to the in-app debug terminal
   nfcBinding.setLogCallback((level: string, message: string) => {
     const l: 'info' | 'warn' | 'error' =
@@ -130,17 +160,54 @@ app.on('ready', () => {
     sendLogToRenderer(l, message);
   });
 
+  // Resolve window icon path for dev vs packaged app so Windows shows the correct icon
+  const devIcon = path.join(app.getAppPath(), 'assets', 'favicon.ico');
+  const prodIcon = path.join(process.resourcesPath || app.getAppPath(), 'assets', 'favicon.ico');
+
+  const windowIcon = app.isPackaged ? prodIcon : devIcon;
+
+  // Create nativeImage for the window icon if available
+  let iconImg: ReturnType<typeof nativeImage.createFromPath> | undefined = undefined;
+  try {
+    if (fs.existsSync(windowIcon)) {
+      const candidate = nativeImage.createFromPath(windowIcon);
+      if (!candidate.isEmpty()) iconImg = candidate;
+    }
+  } catch (err) {
+    console.warn('Could not load window icon:', err);
+  }
+
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
+    title: 'SecurePass',
+    icon: iconImg,
     webPreferences: {
       preload: getPreloadPath(),
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      zoomFactor: 1 / (1.2),   // equivalent to View → Zoom Out ×2
+      zoomFactor: LOCKED_ZOOM_FACTOR,
     }
   });
+
+  // Disable pinch/gesture zoom and lock page zoom to a constant value.
+  void mainWindow.webContents.setVisualZoomLevelLimits(1, 1).catch((err) => {
+    console.warn('Could not set visual zoom limits:', err);
+  });
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (!isZoomInput(input)) return;
+    event.preventDefault();
+    applyLockedZoom(mainWindow);
+  });
+
+  // Re-apply on lifecycle events that can indirectly alter effective zoom.
+  mainWindow.webContents.on('did-finish-load', () => applyLockedZoom(mainWindow));
+  mainWindow.webContents.on('did-navigate-in-page', () => applyLockedZoom(mainWindow));
+  mainWindow.webContents.on('zoom-changed', () => applyLockedZoom(mainWindow));
+  mainWindow.on('focus', () => applyLockedZoom(mainWindow));
+  mainWindow.on('resize', () => applyLockedZoom(mainWindow));
 
   if (isDev()) {
     mainWindow.loadURL('http://localhost:5124');

@@ -1,5 +1,5 @@
 import { useState, type ReactNode, type ComponentType } from 'react';
-import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2 } from 'lucide-react';
+import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe } from 'lucide-react';
 
 const PIN_HASH_KEY = 'app-pin-hash';
 
@@ -133,12 +133,12 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const lsBool= (k: string, d: boolean) =>
     localStorage.getItem(k) !== null ? localStorage.getItem(k) === 'true' : d;
 
-  const [requirePinWake, setRequirePinWake] = useState(() => lsBool('setting-pin-wake',       true));
+  const [requirePinWake, setRequirePinWake] = useState(() => lsBool('setting-pin-wake',       false));
   const [autoLock,       setAutoLock]       = useState(() => ls   ('setting-autolock',         '5'));
   const [revealDuration, setRevealDuration] = useState(() => ls   ('setting-reveal-duration',  '5'));
   const [autoClear,      setAutoClear]      = useState(() => lsBool('setting-autoclear',       false));
   const [autoClearDelay, setAutoClearDelay] = useState(() => ls   ('setting-autoclear-delay',  '30'));
-  const [autoConnect,    setAutoConnect]    = useState(() => lsBool('setting-autoconnect',     false));
+  const [autoConnect,    setAutoConnect]    = useState(() => lsBool('setting-autoconnect',     true));
   const [connTimeout,    setConnTimeout]    = useState(() => ls   ('setting-conn-timeout',     '10'));
   const [retryAttempts,  setRetryAttempts]  = useState(() => ls   ('setting-retries',          '3'));
 
@@ -146,6 +146,8 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [importBusy, setImportBusy] = useState(false);
   const [exportFeedback, setExportFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
   const [importFeedback, setImportFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+  const [extRegBusy,  setExtRegBusy]  = useState(false);
+  const [extRegFeedback, setExtRegFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
 
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
@@ -201,6 +203,25 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     alert('All vault data cleared.');
   };
 
+  const handleReloadRegistration = async () => {
+    setExtRegBusy(true); setExtRegFeedback(null);
+    try {
+      const res = await window.electron['extension:reload-registration']();
+      setExtRegFeedback(res.ok
+        ? { type: 'ok',  message: 'Native host re-registered successfully.' }
+        : { type: 'err', message: res.error ?? 'Registration failed.' });
+    } catch (e) {
+      setExtRegFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setExtRegBusy(false);
+      setTimeout(() => setExtRegFeedback(null), 5000);
+    }
+  };
+
+  const handleOpenExtensionFolder = () => {
+    window.electron['extension:open-folder']();
+  };
+
   // ── Settings search ─────────────────────────────────────────────
   const [settingsSearch, setSettingsSearch] = useState('');
   const q = settingsSearch.trim().toLowerCase();
@@ -222,6 +243,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Import Vault', 'Restore passwords from an encrypted backup')
              || show('App Version', '0.1.0') || show('Stack', 'Electron React C++')
              || show('Clear All Data', 'Permanently delete all passwords and reset the vault'),
+    extension:  show('Browser Extension', 'Autofill passwords in Chrome and Firefox')
+             || show('Reload Registration', 'Re-register the native messaging host')
+             || show('Open Extension Folder', 'Load the extension in Chrome or Firefox'),
   };
   const noResults = q.length > 0 && !Object.values(showSec).some(Boolean);
 
@@ -417,6 +441,44 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                   { value: '10', label: '10 attempts' },
                 ]}
                 onChange={v => sel('setting-retries', v, setRetryAttempts)}
+              />
+            )}
+          </Section>
+        )}
+
+        {/* Browser Extension */}
+        {showSec.extension && (
+          <Section title="Browser Extension" icon={Globe}>
+            {show('Browser Extension', 'Autofill passwords in Chrome and Firefox') && (
+              <div className="px-5 py-4">
+                <p className="text-[14px] text-lo leading-relaxed">
+                  The SecurePass extension autofills passwords in Chrome and Firefox using your NFC card.
+                  After installing the app, load the extension manually once, then it will always stay registered.
+                </p>
+                <ol className="mt-3 space-y-1.5 text-[13px] text-dim list-decimal list-inside leading-relaxed">
+                  <li>Click <strong className="text-lo">Open Extension Folder</strong> below</li>
+                  <li>In Chrome: go to <code className="text-accent">chrome://extensions</code> → enable <em>Developer mode</em> → <em>Load unpacked</em> → select the folder</li>
+                  <li>In Firefox: go to <code className="text-accent">about:debugging</code> → <em>This Firefox</em> → <em>Load Temporary Add-on</em> → select <code className="text-accent">manifest.json</code></li>
+                  <li>The native host is registered automatically every time SecurePass starts</li>
+                </ol>
+              </div>
+            )}
+            {show('Open Extension Folder', 'Load the extension in Chrome or Firefox') && (
+              <ButtonRow
+                label="Open Extension Folder"
+                description="Opens the bundled extension in File Explorer so you can load it in your browser"
+                buttonLabel="Open Folder"
+                onClick={handleOpenExtensionFolder}
+              />
+            )}
+            {show('Reload Registration', 'Re-register the native messaging host') && (
+              <ButtonRow
+                label="Reload Registration"
+                description="Re-registers the native messaging host with Chrome and Firefox — run this if the extension stops connecting"
+                buttonLabel={extRegBusy ? 'Registering…' : 'Reload'}
+                busy={extRegBusy}
+                feedback={extRegFeedback}
+                onClick={handleReloadRegistration}
               />
             )}
           </Section>

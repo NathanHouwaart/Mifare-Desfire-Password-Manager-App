@@ -1,3 +1,11 @@
 {
-  "type": "commonjs"
+  "type": "commonjs",
+  "name": "securepass-bridge-host",
+  "version": "1.0.0",
+  "main": "host.js",
+  "pkg": {
+    "scripts": "host.js",
+    "targets": ["node18-win-x64"],
+    "outputPath": "."
+  }
 }

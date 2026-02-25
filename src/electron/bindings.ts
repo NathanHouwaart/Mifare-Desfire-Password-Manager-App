@@ -7,12 +7,18 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// common places cmake-js / node-gyp put the .node file
+// In a packaged app, electron-builder copies extraResources next to the asar so
+// process.resourcesPath points to the folder containing build/Release/myaddon.node.
+// In dev, process.resourcesPath is undefined, so we fall back to the repo root.
+const resourcesPath: string = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+  ?? path.resolve(__dirname, '..', '..');
+
 const candidates = [
+  path.join(resourcesPath, 'build', 'Release', 'myaddon.node'),
+  path.join(resourcesPath, 'build', 'myaddon.node'),
+  // Legacy dev fallbacks
   path.resolve(process.cwd(), 'build', 'Release', 'myaddon.node'),
   path.resolve(process.cwd(), 'build', 'myaddon.node'),
-  path.resolve(__dirname, '..', '..', 'build', 'Release', 'myaddon.node'),
-  path.resolve(__dirname, '..', '..', 'build', 'myaddon.node')
 ];
 
 const addonPath = candidates.find(p => fs.existsSync(p));

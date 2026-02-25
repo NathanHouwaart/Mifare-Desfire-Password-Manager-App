@@ -1,7 +1,17 @@
 {
-  "appId": "com.example.electron-cpp-template",
-  "files": ["dist-electron", "dist-react", "build/Release/*.node"],
-  "extraResources": ["dist-electron/preload.cjs"],
+  "appId": "com.securepass.app",
+  "productName": "SecurePass",
+  "afterPack": "scripts/afterPack.js",
+  "files": ["dist-electron", "dist-react", "assets"],
+  "icon": "assets/favicon.ico",
+  "extraResources": [
+    "dist-electron/preload.cjs",
+    { "from": "build/Release",       "to": "build/Release"       },
+    { "from": "assets/favicon.ico",  "to": "assets/favicon.ico"  },
+    { "from": "drivers/cp210x",      "to": "drivers/cp210x"      },
+    { "from": "native-host",         "to": "native-host"         },
+    { "from": "extension",           "to": "extension"           }
+  ],
   "mac": {
     "target": "dmg"
   },
@@ -10,6 +20,18 @@
     "category": "Utility"
   },
   "win": {
-    "target": ["portable", "msi"]
+    "target": "nsis",
+    "artifactName": "SecurePass-Setup-${version}.exe",
+    "signExts": [],
+    "signAndEditExecutable": false
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "SecurePass",
+    "include": "build/installer.nsh"
   }
 }
