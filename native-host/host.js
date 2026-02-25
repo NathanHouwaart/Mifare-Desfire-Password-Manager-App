@@ -18,9 +18,22 @@
 
 const fs   = require('fs');
 const net  = require('net');
+const path = require('path');
 
-const PIPE_PATH       = '\\\\.\\pipe\\securepass-bridge';
+const BRIDGE_NAME     = 'securepass-bridge';
 const REQUEST_TIMEOUT = 30_000;
+
+function getBridgeEndpoint() {
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${BRIDGE_NAME}`;
+  const runtimeDir =
+    process.env.XDG_RUNTIME_DIR ||
+    process.env.TMPDIR ||
+    process.env.TMP ||
+    '/tmp';
+  return path.join(runtimeDir, `${BRIDGE_NAME}.sock`);
+}
+
+const BRIDGE_ENDPOINT = getBridgeEndpoint();
 
 // ─── Read one native message from stdin (synchronous) ─────────────────────
 // fs.readSync on fd 0 is the only reliable approach for native messaging;
@@ -62,7 +75,7 @@ function forwardToBridge(request) {
       reject(new Error('Bridge request timed out'));
     }, REQUEST_TIMEOUT);
 
-    const socket = net.createConnection(PIPE_PATH, () => {
+    const socket = net.createConnection(BRIDGE_ENDPOINT, () => {
       socket.write(JSON.stringify(request) + '\n');
     });
 

@@ -1,170 +1,330 @@
 /**
  * nativeHostRegistrar.ts
  *
- * Called once on app startup. Writes (or refreshes) the native messaging host
- * manifest and Windows registry key so the browser extension can always find
- * the correct paths — both during development and after a real installation.
- *
- * In dev  : native-host/ lives next to the source tree.
- * In prod : electron-builder copies it to resources/native-host/ inside the
- *           install dir. We detect which case we're in via app.isPackaged.
+ * Called on app startup. Writes the native messaging host manifest and
+ * platform-specific registration so browser extensions can find the bridge.
  */
 
-import { app }        from 'electron';
-import path           from 'node:path';
-import fs             from 'node:fs';
-import { execSync }   from 'node:child_process';
+import { app } from 'electron';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { execSync } from 'node:child_process';
 
-const HOST_NAME   = 'com.securepass.bridge';
-const CHROME_KEY  = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${HOST_NAME}`;
-const FIREFOX_KEY = `HKCU\\Software\\Mozilla\\NativeMessagingHosts\\${HOST_NAME}`;
+const HOST_NAME = 'com.securepass.bridge';
+const FIREFOX_EXTENSION_ID = 'securepass@localhost';
 
-// ─── Locate the native-host directory ────────────────────────────────────────
+const CHROME_REG_KEY = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${HOST_NAME}`;
+const FIREFOX_REG_KEY = `HKCU\\Software\\Mozilla\\NativeMessagingHosts\\${HOST_NAME}`;
+
+type UnixManifestTarget = {
+  browser: string;
+  manifestPath: string;
+  isFirefox: boolean;
+};
+
+function ensureDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return Array.from(new Set(values.filter((v): v is string => typeof v === 'string' && v.length > 0)));
+}
 
 function getNativeHostDir(): string {
   if (app.isPackaged) {
-    // electron-builder places extraResources at <install>/resources/
     return path.join(process.resourcesPath, 'native-host');
   }
-  // Dev: two levels up from dist-electron/ (or src/electron/) → project root → native-host/
   return path.resolve(app.getAppPath(), 'native-host');
 }
 
-// ─── Find node.exe ───────────────────────────────────────────────────────────
+function getRegistrationDir(): string {
+  return path.join(app.getPath('userData'), 'native-host');
+}
 
-function findNodeExe(): string {
-  // In packaged mode we have no guarantee the user has Node — but the host
-  // script must run somehow. We try these strategies in order:
-  //   1. The path stored from a previous registration (env var set by this fn)
-  //   2. `where.exe node` using the full user PATH from the registry
-  //   3. Common nvm / nvm4w / fnm install locations
+function readExistingOrigins(pathsToRead: readonly string[]): string[] {
+  const origins: string[] = [];
+  for (const p of pathsToRead) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as { allowed_origins?: unknown };
+      if (Array.isArray(parsed.allowed_origins)) {
+        for (const origin of parsed.allowed_origins) {
+          if (typeof origin === 'string' && origin.length > 0) {
+            origins.push(origin);
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed files and continue.
+    }
+  }
+  return uniqueStrings(origins);
+}
 
+function findNodeExecutable(): string {
+  return process.platform === 'win32' ? findNodeOnWindows() : findNodeOnUnix();
+}
+
+function findNodeOnWindows(): string {
   const cached = process.env.SECUREPASS_NODE_EXE;
   if (cached && fs.existsSync(cached)) return cached;
 
-  // Try `where.exe node` with the user's real PATH (not Chrome's stripped one)
+  if (path.basename(process.execPath).toLowerCase() === 'node.exe' && fs.existsSync(process.execPath)) {
+    return process.execPath;
+  }
+
   try {
     const userPath = execSync(
       'powershell -NoProfile -Command "[System.Environment]::GetEnvironmentVariable(\'PATH\',\'User\')"',
       { encoding: 'utf8', timeout: 5000 }
     ).trim();
 
-    const result = execSync('where.exe node', {
+    const found = execSync('where.exe node', {
       encoding: 'utf8',
-      timeout:  5000,
+      timeout: 5000,
       env: { ...process.env, PATH: `${userPath};${process.env.PATH ?? ''}` },
-    }).trim().split('\n')[0].trim();
+    })
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
 
-    if (result && fs.existsSync(result)) return result;
-  } catch { /* fall through */ }
+    if (found && fs.existsSync(found)) return found;
+  } catch {
+    // fall through
+  }
 
-  // Common locations
   const candidates = [
-    process.env.SECUREPASS_NODE_EXE,
     'C:\\nvm4w\\nodejs\\node.exe',
     'C:\\Program Files\\nodejs\\node.exe',
     path.join(process.env.APPDATA ?? '', 'nvm', 'nodejs', 'node.exe'),
     path.join(process.env.LOCALAPPDATA ?? '', 'fnm_multishells', 'node.exe'),
-  ].filter(Boolean) as string[];
+  ].filter(Boolean);
 
-  for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
   }
 
-  // Last resort – hope `node` is visible in whatever PATH the bat inherits
   return 'node';
 }
 
-// ─── Write the bat launcher with the real node path ──────────────────────────
+function findNodeOnUnix(): string {
+  const cached = process.env.SECUREPASS_NODE_EXE;
+  if (cached && fs.existsSync(cached)) return cached;
 
-function writeBatFile(hostDir: string, nodeExe: string): string {
-  const batPath  = path.join(hostDir, 'run-host.bat');
-  const hostExe  = path.join(hostDir, 'host.exe');
+  if (path.basename(process.execPath).startsWith('node') && fs.existsSync(process.execPath)) {
+    return process.execPath;
+  }
 
-  // Prefer the pre-compiled standalone binary (no Node dep needed on user machine)
-  const content = fs.existsSync(hostExe)
-    ? [
-        '@echo off',
-        ':: Auto-generated by SecurePass on startup — do not edit by hand.',
-        `"${hostExe}" 2>> "%~dp0host-error.log"`,
-      ].join('\r\n') + '\r\n'
-    : [
-        '@echo off',
-        ':: Auto-generated by SecurePass on startup — do not edit by hand.',
-        `"${nodeExe}" "%~dp0host.js" 2>> "%~dp0host-error.log"`,
-      ].join('\r\n') + '\r\n';
+  try {
+    const found = execSync('command -v node', { encoding: 'utf8', timeout: 5000 }).trim();
+    if (found && fs.existsSync(found)) return found;
+  } catch {
+    // fall through
+  }
 
-  fs.writeFileSync(batPath, content, 'utf8');
-  return batPath;
+  const candidates = ['/usr/local/bin/node', '/usr/bin/node', '/opt/homebrew/bin/node'];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  return 'node';
 }
 
-// ─── Write the native messaging manifest JSON ─────────────────────────────────
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
 
-function writeManifestJson(hostDir: string, batPath: string, filename: string, extra: object): string {
-  const manifestPath = path.join(hostDir, filename);
+function writeWindowsLauncher(registrationDir: string, hostDir: string, nodeExe: string): string {
+  const launcherPath = path.join(registrationDir, 'run-host.bat');
+  const hostDirWin = hostDir.replace(/\//g, '\\');
+  const nodeWin = nodeExe.replace(/\//g, '\\');
+
+  const lines = [
+    '@echo off',
+    'setlocal',
+    `set "HOST_DIR=${hostDirWin}"`,
+    'if exist "%HOST_DIR%\\host.exe" (',
+    '  "%HOST_DIR%\\host.exe" 2>> "%~dp0host-error.log"',
+    ') else (',
+    `  "${nodeWin}" "%HOST_DIR%\\host.js" 2>> "%~dp0host-error.log"`,
+    ')',
+  ];
+
+  fs.writeFileSync(launcherPath, `${lines.join('\r\n')}\r\n`, 'utf8');
+  return launcherPath;
+}
+
+function writeUnixLauncher(registrationDir: string, hostDir: string, nodeExe: string): string {
+  const launcherPath = path.join(registrationDir, 'run-host.sh');
+  const hostBinary = path.join(hostDir, 'host');
+  const hostScript = path.join(hostDir, 'host.js');
+  const errorLog = path.join(registrationDir, 'host-error.log');
+
+  const lines = [
+    '#!/usr/bin/env sh',
+    'set -eu',
+    `if [ -x ${shellQuote(hostBinary)} ]; then`,
+    `  exec ${shellQuote(hostBinary)} 2>> ${shellQuote(errorLog)}`,
+    'fi',
+    `exec ${shellQuote(nodeExe)} ${shellQuote(hostScript)} 2>> ${shellQuote(errorLog)}`,
+  ];
+
+  fs.writeFileSync(launcherPath, `${lines.join('\n')}\n`, 'utf8');
+  fs.chmodSync(launcherPath, 0o755);
+  return launcherPath;
+}
+
+function writeLauncher(registrationDir: string, hostDir: string, nodeExe: string): string {
+  return process.platform === 'win32'
+    ? writeWindowsLauncher(registrationDir, hostDir, nodeExe)
+    : writeUnixLauncher(registrationDir, hostDir, nodeExe);
+}
+
+function writeManifestJson(
+  manifestPath: string,
+  launcherPath: string,
+  extra: Record<string, unknown>
+): void {
+  ensureDir(path.dirname(manifestPath));
   const manifest = {
-    name:        HOST_NAME,
+    name: HOST_NAME,
     description: 'SecurePass NFC Password Manager bridge',
-    path:        batPath.replace(/\//g, '\\'),
-    type:        'stdio',
+    path: process.platform === 'win32' ? launcherPath.replace(/\//g, '\\') : launcherPath,
+    type: 'stdio',
     ...extra,
   };
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
-  return manifestPath;
 }
 
-// ─── Write registry keys ──────────────────────────────────────────────────────
-
-function setRegistryKey(key: string, jsonPath: string) {
-  const escaped = jsonPath.replace(/\\/g, '\\\\');
+function setRegistryKey(key: string, manifestPath: string): void {
+  const escaped = manifestPath.replace(/\\/g, '\\\\');
   execSync(`reg add "${key}" /ve /t REG_SZ /d "${escaped}" /f`, {
     windowsHide: true,
-    timeout:     5000,
+    timeout: 5000,
   });
 }
 
-// ─── Public entry-point ───────────────────────────────────────────────────────
+function getUnixManifestTargets(homeDir: string): UnixManifestTarget[] {
+  if (process.platform === 'linux') {
+    return [
+      {
+        browser: 'google-chrome',
+        manifestPath: path.join(homeDir, '.config', 'google-chrome', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'chromium',
+        manifestPath: path.join(homeDir, '.config', 'chromium', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'brave',
+        manifestPath: path.join(homeDir, '.config', 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'vivaldi',
+        manifestPath: path.join(homeDir, '.config', 'vivaldi', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'firefox',
+        manifestPath: path.join(homeDir, '.mozilla', 'native-messaging-hosts', `${HOST_NAME}.json`),
+        isFirefox: true,
+      },
+    ];
+  }
+
+  if (process.platform === 'darwin') {
+    return [
+      {
+        browser: 'google-chrome',
+        manifestPath: path.join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'chromium',
+        manifestPath: path.join(homeDir, 'Library', 'Application Support', 'Chromium', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'brave',
+        manifestPath: path.join(homeDir, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'vivaldi',
+        manifestPath: path.join(homeDir, 'Library', 'Application Support', 'Vivaldi', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: false,
+      },
+      {
+        browser: 'firefox',
+        manifestPath: path.join(homeDir, 'Library', 'Application Support', 'Mozilla', 'NativeMessagingHosts', `${HOST_NAME}.json`),
+        isFirefox: true,
+      },
+    ];
+  }
+
+  return [];
+}
 
 export function registerNativeHost(log: (msg: string) => void = console.log): void {
   try {
     const hostDir = getNativeHostDir();
-
     if (!fs.existsSync(hostDir)) {
-      log(`[NativeHostRegistrar] native-host dir not found at ${hostDir} — skipping`);
+      log(`[NativeHostRegistrar] native-host dir not found at ${hostDir}; skipping`);
       return;
     }
 
-    const nodeExe    = findNodeExe();
-    const batPath    = writeBatFile(hostDir, nodeExe);
+    const registrationDir = getRegistrationDir();
+    ensureDir(registrationDir);
 
-    const chromeJson  = writeManifestJson(hostDir, batPath, 'com.securepass.bridge.json', {
-      allowed_origins: [
-        // Keep whatever is already in the existing file (updated by user / setup flow)
-        ...readExistingOrigins(path.join(hostDir, 'com.securepass.bridge.json')),
-      ],
+    const nodeExe = findNodeExecutable();
+    const launcherPath = writeLauncher(registrationDir, hostDir, nodeExe);
+
+    const registrationChromeManifest = path.join(registrationDir, `${HOST_NAME}.json`);
+    const registrationFirefoxManifest = path.join(registrationDir, `${HOST_NAME}.firefox.json`);
+    const repoChromeManifest = path.join(hostDir, `${HOST_NAME}.json`);
+
+    const unixTargets = process.platform === 'win32' ? [] : getUnixManifestTargets(os.homedir());
+    const existingChromeOrigins = readExistingOrigins([
+      registrationChromeManifest,
+      repoChromeManifest,
+      ...unixTargets.filter((t) => !t.isFirefox).map((t) => t.manifestPath),
+    ]);
+
+    writeManifestJson(registrationChromeManifest, launcherPath, {
+      allowed_origins: existingChromeOrigins,
+    });
+    writeManifestJson(registrationFirefoxManifest, launcherPath, {
+      allowed_extensions: [FIREFOX_EXTENSION_ID],
     });
 
-    const firefoxJson = writeManifestJson(hostDir, batPath, 'com.securepass.bridge.firefox.json', {
-      allowed_extensions: ['securepass@localhost'],
-    });
+    if (process.platform === 'win32') {
+      setRegistryKey(CHROME_REG_KEY, registrationChromeManifest);
+      setRegistryKey(FIREFOX_REG_KEY, registrationFirefoxManifest);
+      log(`[NativeHostRegistrar] registered on Windows. launcher=${launcherPath}`);
+      return;
+    }
 
-    setRegistryKey(CHROME_KEY,  chromeJson);
-    setRegistryKey(FIREFOX_KEY, firefoxJson);
+    for (const target of unixTargets) {
+      writeManifestJson(
+        target.manifestPath,
+        launcherPath,
+        target.isFirefox
+          ? { allowed_extensions: [FIREFOX_EXTENSION_ID] }
+          : { allowed_origins: existingChromeOrigins }
+      );
+      log(`[NativeHostRegistrar] wrote ${target.browser} manifest: ${target.manifestPath}`);
+    }
 
-    log(`[NativeHostRegistrar] registered OK  node=${nodeExe}`);
+    if (existingChromeOrigins.length === 0) {
+      log('[NativeHostRegistrar] warning: no Chrome/Chromium extension origin found in allowed_origins.');
+    }
+
+    log(`[NativeHostRegistrar] registered on ${process.platform}. launcher=${launcherPath} node=${nodeExe}`);
   } catch (err) {
-    // Non-fatal — app still works; user just can't use the browser extension
     log(`[NativeHostRegistrar] registration failed: ${(err as Error).message}`);
-  }
-}
-
-// ─── Preserve existing Chrome extension IDs ──────────────────────────────────
-
-function readExistingOrigins(jsonPath: string): string[] {
-  try {
-    const existing = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-    return existing.allowed_origins ?? [];
-  } catch {
-    return [];
   }
 }

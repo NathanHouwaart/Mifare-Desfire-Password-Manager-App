@@ -16,7 +16,7 @@ set(NFCCPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(NFCCPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(native/libs/NfcCpp)
 
-file(GLOB_RECURSE MYLIBRARY_FILES
+file(GLOB_RECURSE MYLIBRARY_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/native/libs/MyLibrary/src/*.cpp"
     "${CMAKE_SOURCE_DIR}/native/libs/MyLibrary/src/*.c"
 )
@@ -24,7 +24,7 @@ add_library(MyLibrary STATIC ${MYLIBRARY_FILES})
 target_include_directories(MyLibrary PUBLIC "${CMAKE_SOURCE_DIR}/native/libs/MyLibrary/inc")
 
 # 2. Core Logic
-file(GLOB_RECURSE CORE_FILES
+file(GLOB_RECURSE CORE_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/native/core/services/*.cc"
     "${CMAKE_SOURCE_DIR}/native/core/services/*.cpp"
 )
@@ -32,7 +32,7 @@ add_library(core_lib STATIC ${CORE_FILES})
 target_include_directories(core_lib PUBLIC "${CMAKE_SOURCE_DIR}/native")
 
 # 3. Hardware Adapters
-file(GLOB_RECURSE ADAPTER_FILES
+file(GLOB_RECURSE ADAPTER_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/native/adapters/hardware/*.cc"
     "${CMAKE_SOURCE_DIR}/native/adapters/hardware/*.cpp"
 )
@@ -45,7 +45,7 @@ target_include_directories(hardware_adapter PUBLIC
 target_link_libraries(hardware_adapter PUBLIC core_lib NfcCpp)
 
 # 4. Node Addon
-file(GLOB_RECURSE BINDING_FILES
+file(GLOB_RECURSE BINDING_FILES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/native/bindings/node/*.cc"
     "${CMAKE_SOURCE_DIR}/native/bindings/node/*.cpp"
     "${CMAKE_SOURCE_DIR}/native/RegisterModules.cc"

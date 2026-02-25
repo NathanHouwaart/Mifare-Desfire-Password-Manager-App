@@ -6,7 +6,7 @@
 
 namespace comms {
 namespace serial {
-class SerialBusWin;
+class ISerialBus;
 }
 }
 
@@ -47,7 +47,7 @@ private:
     void disconnectNoLock();
 
     std::mutex _mutex;
-    std::unique_ptr<comms::serial::SerialBusWin> _serial;
+    std::unique_ptr<comms::serial::ISerialBus> _serial;
     std::unique_ptr<pn532::Pn532Driver> _pn532;
     std::unique_ptr<pn532::Pn532ApduAdapter> _apduAdapter;
     std::unique_ptr<nfc::CardManager> _cardManager;

@@ -19,6 +19,8 @@
  */
 
 import net from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
 import { NfcCppBinding } from './bindings.js';
 import { getMachineSecret } from './main.js';
 import { deriveCardKey, deriveEntryKey, decryptEntry, zeroizeBuffer } from './keyDerivation.js';
@@ -27,9 +29,34 @@ import { beginCardWait } from './nfcCancel.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PIPE_PATH        = '\\\\.\\pipe\\securepass-bridge';
+const BRIDGE_NAME      = 'securepass-bridge';
 const PROBE_INTERVAL   = 200;   // ms
 const PROBE_TIMEOUT    = 15_000; // ms
+
+function getBridgeEndpoint(): string {
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${BRIDGE_NAME}`;
+  const runtimeDir =
+    process.env.XDG_RUNTIME_DIR ??
+    process.env.TMPDIR ??
+    process.env.TMP ??
+    '/tmp';
+  return path.join(runtimeDir, `${BRIDGE_NAME}.sock`);
+}
+
+const BRIDGE_ENDPOINT = getBridgeEndpoint();
+
+function cleanupUnixSocket(
+  endpoint: string,
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void
+) {
+  if (process.platform === 'win32') return;
+  try {
+    if (fs.existsSync(endpoint)) fs.unlinkSync(endpoint);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log('warn', `[bridge] could not clean up socket ${endpoint}: ${msg}`);
+  }
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -122,6 +149,8 @@ export function startBridgeServer(
   nfcBinding: NfcCppBinding,
   log: (level: 'info' | 'warn' | 'error', msg: string) => void
 ): net.Server {
+  cleanupUnixSocket(BRIDGE_ENDPOINT, log);
+
   const server = net.createServer((socket) => {
     log('info', '[bridge] extension host connected');
 
@@ -159,13 +188,27 @@ export function startBridgeServer(
     socket.on('error', (err) => log('warn', `[bridge] socket error: ${err.message}`));
   });
 
-  server.listen(PIPE_PATH, () => {
-    log('info', `[bridge] listening on ${PIPE_PATH}`);
+  server.listen(BRIDGE_ENDPOINT, () => {
+    if (process.platform !== 'win32') {
+      try {
+        fs.chmodSync(BRIDGE_ENDPOINT, 0o600);
+      } catch { /* best-effort */ }
+    }
+    log('info', `[bridge] listening on ${BRIDGE_ENDPOINT}`);
   });
 
   server.on('error', (err) => {
     log('error', `[bridge] server error: ${err.message}`);
   });
+
+  server.on('close', () => {
+    cleanupUnixSocket(BRIDGE_ENDPOINT, log);
+  });
+
+  const cleanupOnExit = () => cleanupUnixSocket(BRIDGE_ENDPOINT, log);
+  process.once('exit', cleanupOnExit);
+  process.once('SIGINT', cleanupOnExit);
+  process.once('SIGTERM', cleanupOnExit);
 
   return server;
 }

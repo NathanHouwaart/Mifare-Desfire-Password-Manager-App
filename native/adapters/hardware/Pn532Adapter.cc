@@ -1,5 +1,6 @@
 #include "Pn532Adapter.h"
-#include "Comms/Serial/SerialBusWin.hpp"
+#include "SerialBusPlatform.h"
+#include "Comms/Serial/ISerialBus.hpp"
 #include "Pn532/Pn532Driver.h"
 #include "Pn532/Commands/PerformSelfTest.h"
 #include "Pn532/Pn532ApduAdapter.h"
@@ -66,8 +67,14 @@ core::ports::Result<std::string> Pn532Adapter::connect(const std::string& port) 
             return core::ports::NfcError{"HARDWARE_ERROR", "Already connected to a port."};
         }
 
-        etl::string<256> etlPort(port.c_str());
-        auto serial = std::make_unique<comms::serial::SerialBusWin>(etlPort, 115200);
+        auto serial = createPlatformSerialBus(port, 115200);
+        if (!serial) {
+            return core::ports::NfcError{
+                "NOT_SUPPORTED",
+                "Serial backend is not available on this platform yet."
+            };
+        }
+
         auto initResult = serial->init();
         if (!initResult.has_value()) {
             return core::ports::NfcError{"HARDWARE_ERROR", "Failed to initialize serial port: " + port};
