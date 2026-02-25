@@ -9,7 +9,9 @@ import { getPreloadPath, getUIPath } from './pathResolver.js';
 import { openVault, closeVault } from './vault.js';
 import { registerCardHandlers } from './cardHandlers.js';
 import { registerVaultHandlers } from './vaultHandlers.js';
-import { cancelCardWait } from './nfcCancel.js';
+import { startBridgeServer }    from './bridgeServer.js';
+import { cancelCardWait }       from './nfcCancel.js';
+import { registerNativeHost }   from './nativeHostRegistrar.js';
 
 // Add global error handlers to catch crashes
 process.on('uncaughtException', (error) => {
@@ -105,6 +107,13 @@ app.on('ready', () => {
   registerCardHandlers(nfcBinding, nfcLog);
   registerVaultHandlers(nfcBinding, nfcLog);
 
+  // Start the named-pipe bridge that feeds the browser extension.
+  startBridgeServer(nfcBinding, nfcLog);
+
+  // Keep the native messaging host registration up-to-date so the browser
+  // extension always points to the correct install location.
+  registerNativeHost((msg) => nfcLog('info', msg));
+
   // Allow the renderer to abort any in-progress card-wait polling loop.
   ipcMain.handle('nfc:cancel', () => { cancelCardWait(); });
 
@@ -128,7 +137,8 @@ app.on('ready', () => {
       preload: getPreloadPath(),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: true
+      sandbox: true,
+      zoomFactor: 1 / (1.2),   // equivalent to View → Zoom Out ×2
     }
   });
 
