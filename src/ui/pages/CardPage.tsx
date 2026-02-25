@@ -97,6 +97,9 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
   const [formatState,     setFormatState]     = useState<OpState>('idle');
   const [formatMsg,       setFormatMsg]       = useState('');
   const [confirmFormat,   setConfirmFormat]   = useState(false);
+  const [confirmFormatText, setConfirmFormatText] = useState('');
+
+  const CONFIRM_PHRASE = 'format and wipe';
 
   // ── Tap overlay ───────────────────────────────────────────────────────────
   const [tapOverlay,      setTapOverlay]      = useState<{ message: string } | null>(null);
@@ -171,6 +174,7 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
   // ── Format card ────────────────────────────────────────────────────────────
   const handleFormat = useCallback(async () => {
     setConfirmFormat(false);
+    setConfirmFormatText('');
     setFormatState('busy'); setFormatMsg('Waiting for card tap…');
     setTapOverlay({ message: 'to format the card and wipe the vault — this cannot be undone' });
     setTapCancelled(false);
@@ -213,7 +217,7 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
 
       {/* NFC not connected warning */}
       {!isNfcConnected && (
-        <div className="flex items-start gap-3 rounded-2xl bg-warn-soft border border-warn-edge p-4">
+        <div className="flex items-start gap-3 rounded-2xl bg-warn-soft border border-warn-edge p-4 mb-4">
           <AlertTriangle className="w-5 h-5 text-warn shrink-0 mt-0.5" />
           <div>
             <p className="text-[14px] font-semibold text-warn">NFC reader not connected</p>
@@ -340,7 +344,7 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
         {!confirmFormat ? (
           <ActionBtn
             variant="destructive"
-            onClick={() => setConfirmFormat(true)}
+            onClick={() => { setConfirmFormat(true); setConfirmFormatText(''); }}
             disabled={!isNfcConnected || formatState === 'busy'}
           >
             <Trash2 className="w-4 h-4" />
@@ -350,19 +354,37 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
           <div className="flex flex-col gap-3 rounded-xl bg-err-soft border border-err-edge p-4">
             <p className="text-[14px] font-semibold text-err">Are you absolutely sure?</p>
             <p className="text-[13px] text-lo">
-              All vault entries will be deleted and the card will be reset. You cannot recover this
-              data.
+              All vault entries will be permanently deleted and the card will be reset to factory
+              state. <span className="font-medium text-mid">This cannot be undone.</span>
             </p>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[13px] text-lo">
+                Type{' '}
+                <span className="font-mono font-semibold text-err">{CONFIRM_PHRASE}</span>
+                {' '}to confirm:
+              </label>
+              <input
+                type="text"
+                value={confirmFormatText}
+                onChange={e => setConfirmFormatText(e.target.value)}
+                placeholder={CONFIRM_PHRASE}
+                spellCheck={false}
+                className="w-full bg-input border border-edge text-hi text-[14px] font-mono
+                           px-3 py-2 rounded-lg outline-none
+                           focus:border-err focus:ring-1 focus:ring-err/30
+                           placeholder:text-dim/50 transition-all duration-150"
+              />
+            </div>
             <div className="flex gap-2">
               <ActionBtn
                 variant="destructive"
                 onClick={handleFormat}
-                disabled={formatState === 'busy'}
+                disabled={formatState === 'busy' || confirmFormatText !== CONFIRM_PHRASE}
               >
                 <Trash2 className="w-4 h-4" />
                 Yes, Format &amp; Wipe
               </ActionBtn>
-              <ActionBtn onClick={() => setConfirmFormat(false)}>
+              <ActionBtn onClick={() => { setConfirmFormat(false); setConfirmFormatText(''); }}>
                 Cancel
               </ActionBtn>
             </div>

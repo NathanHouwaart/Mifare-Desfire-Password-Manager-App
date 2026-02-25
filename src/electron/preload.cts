@@ -36,6 +36,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
 
     // Clear the system clipboard via the main process (no focus restriction)
     'clipboard:clear': () => ipcInvoke('clipboard:clear'),
+    // Read the system clipboard via the main process (no focus restriction)
+    'clipboard:read':  () => ipcInvoke('clipboard:read'),
 } satisfies Window["electron"]);
 
 

@@ -123,6 +123,8 @@ type IPCHandlers = {
   'nfc:cancel': () => Promise<void>;
   /** Clears the system clipboard from the main process — no document-focus restriction. */
   'clipboard:clear': () => Promise<void>;
+  /** Reads the current system clipboard text from the main process — no document-focus restriction. */
+  'clipboard:read':  () => Promise<string>;
 
   // ── Vault operations (card-gated where noted) ─────────────────────────────
   /** Returns metadata rows only — no card tap needed. */

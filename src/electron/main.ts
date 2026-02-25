@@ -24,6 +24,13 @@ process.on('unhandledRejection', (reason, promise) => {
 let mainWindow: BrowserWindow | null = null;
 let nfcBinding: NfcCppBinding | null = null;
 
+/**
+ * Tracks the port the C++ binding currently has open.
+ * Used to give the renderer a success response when it reconnects after
+ * an HMR reload without the underlying serial port ever closing.
+ */
+let connectedPort: string | null = null;
+
 // ── Machine secret ────────────────────────────────────────────────────────────
 
 /**
@@ -104,6 +111,9 @@ app.on('ready', () => {
   // Clear the system clipboard from the main process (no focus restriction).
   ipcMain.handle('clipboard:clear', () => { clipboard.writeText(''); });
 
+  // Read the current clipboard text from the main process (no focus restriction).
+  ipcMain.handle('clipboard:read', () => clipboard.readText());
+
   // Forward all C++ library logs to the in-app debug terminal
   nfcBinding.setLogCallback((level: string, message: string) => {
     const l: 'info' | 'warn' | 'error' =
@@ -145,9 +155,26 @@ ipcMain.handle('add', (_event: IpcMainInvokeEvent, a: number, b: number) => {
 
 ipcMain.handle('connect', async (_event: IpcMainInvokeEvent, port: string) => {
   if (!nfcBinding) throw new Error("NFC Binding not initialized");
+
+  // After an HMR reload the renderer's isConnected state resets to false but
+  // the underlying serial port is still open in the C++ binding.  If the
+  // renderer tries to reconnect to the same port, just confirm success so the
+  // UI state syncs without touching the hardware.
+  if (connectedPort !== null) {
+    if (connectedPort === port) {
+      nfcLog('info', `Already connected to ${port} — confirming state sync.`);
+      return `Connected to ${port} (already open)`;
+    }
+    throw Object.assign(
+      new Error(`Already connected to ${connectedPort}. Disconnect first.`),
+      { code: 'HARDWARE_ERROR' }
+    );
+  }
+
   nfcLog('info', `Connecting to ${port}...`);
   try {
     const result = await nfcBinding.connect(port);
+    connectedPort = port;
     nfcLog('info', result);
     return result;
   } catch (error: unknown) {
@@ -162,6 +189,7 @@ ipcMain.handle('disconnect', async (_event: IpcMainInvokeEvent) => {
   nfcLog('info', 'Disconnecting...');
   try {
     const result = await nfcBinding.disconnect();
+    connectedPort = null;
     nfcLog('info', result ? 'Disconnected successfully' : 'Disconnect returned false');
     return result;
   } catch (error: unknown) {

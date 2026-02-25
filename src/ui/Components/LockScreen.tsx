@@ -1,13 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
-import { ShieldCheck, Delete } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Delete, ShieldCheck } from 'lucide-react';
 
 const PIN_HASH_KEY = 'app-pin-hash';
 const PIN_LENGTH = 6;
+const NUMBER_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 
 async function sha256(text: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(buf))
-    .map(b => b.toString(16).padStart(2, '0'))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
 }
 
@@ -26,77 +27,90 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
   const [shake, setShake] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
+  const [clock, setClock] = useState(() => new Date());
 
-  // Entrance animation — deferred one frame so initial opacity-0 class renders first
+  useEffect(() => {
+    const id = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
   }, []);
 
-  const triggerShake = (msg: string) => {
-    setError(msg);
+  const triggerShake = useCallback((message: string) => {
+    setError(message);
     setPin('');
     setShake(true);
-    setTimeout(() => setShake(false), 500);
-  };
+    setTimeout(() => setShake(false), 450);
+  }, []);
 
-  const handleComplete = async (entered: string) => {
+  const finishUnlock = useCallback(() => {
+    setUnlocking(true);
+    setTimeout(() => onUnlock(), 720);
+  }, [onUnlock]);
+
+  const handleComplete = useCallback(async (entered: string) => {
     if (isSettingPin) {
       if (phase === 'enter') {
         setFirstPin(entered);
         setPhase('confirm');
         setPin('');
-      } else {
-        if (entered === firstPin) {
-          const hash = await sha256(entered);
-          localStorage.setItem(PIN_HASH_KEY, hash);
-          setUnlocking(true);
-          setTimeout(() => onUnlock(), 800);
-        } else {
-          setPhase('enter');
-          setFirstPin('');
-          triggerShake("PINs don't match — try again");
-        }
+        return;
       }
-    } else {
-      const hash = await sha256(entered);
-      if (hash === storedHash) {
-        setUnlocking(true);
-        setTimeout(() => onUnlock(), 800);
+
+      if (entered === firstPin) {
+        const hash = await sha256(entered);
+        localStorage.setItem(PIN_HASH_KEY, hash);
+        finishUnlock();
       } else {
-        triggerShake('Incorrect PIN');
+        setPhase('enter');
+        setFirstPin('');
+        triggerShake('PINs do not match - try again');
       }
+      return;
     }
-  };
 
-  const handleDigit = (d: string) => {
-    if (pin.length >= PIN_LENGTH || unlocking) return;
-    setError('');
-    const next = pin + d;
-    setPin(next);
-    if (next.length === PIN_LENGTH) handleComplete(next);
-  };
+    const hash = await sha256(entered);
+    if (hash === storedHash) finishUnlock();
+    else triggerShake('Incorrect PIN');
+  }, [finishUnlock, firstPin, isSettingPin, phase, storedHash, triggerShake]);
 
-  const handleBackspace = () => {
+  const handleDigit = useCallback((digit: string) => {
     if (unlocking) return;
     setError('');
-    setPin(p => p.slice(0, -1));
-  };
+    setPin((current) => {
+      if (current.length >= PIN_LENGTH) return current;
+      const next = current + digit;
+      if (next.length === PIN_LENGTH) void handleComplete(next);
+      return next;
+    });
+  }, [handleComplete, unlocking]);
 
-  // Latest-ref pattern: stable keyboard listener that always invokes the current handler
-  const handleDigitRef = useRef(handleDigit);
-  const handleBackspaceRef = useRef(handleBackspace);
-  useEffect(() => { handleDigitRef.current = handleDigit; });
-  useEffect(() => { handleBackspaceRef.current = handleBackspace; });
+  const handleBackspace = useCallback(() => {
+    if (unlocking) return;
+    setError('');
+    setPin((value) => value.slice(0, -1));
+  }, [unlocking]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (/^[0-9]$/.test(e.key)) handleDigitRef.current(e.key);
-      else if (e.key === 'Backspace' || e.key === 'Delete') handleBackspaceRef.current();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (/^[0-9]$/.test(event.key)) {
+        event.preventDefault();
+        handleDigit(event.key);
+        return;
+      }
+      if (event.key === 'Backspace' || event.key === 'Delete') {
+        event.preventDefault();
+        handleBackspace();
+      }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleBackspace, handleDigit]);
 
   const title = isSettingPin
     ? (phase === 'enter' ? 'Set a PIN' : 'Confirm PIN')
@@ -104,121 +118,151 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
 
   const subtitle = isSettingPin
     ? (phase === 'enter'
-        ? 'Choose a 6-digit PIN to secure your vault'
-        : 'Enter your PIN again to confirm')
-    : 'Enter your PIN to unlock the vault';
+      ? 'Choose a 6-digit PIN to secure your vault.'
+      : 'Enter your PIN again to finish setup.')
+    : 'Enter your 6-digit PIN to unlock the vault.';
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-page">
+    <div className="relative h-screen w-screen overflow-hidden bg-page">
       <div
-        className={`flex flex-col items-center gap-5 transition-[opacity,transform] duration-500 ease-out
-          ${!mounted && !unlocking ? 'opacity-0 translate-y-8' : ''}
-          ${mounted && !unlocking ? 'opacity-100 translate-y-0' : ''}
-          ${unlocking ? 'opacity-0 -translate-y-6 scale-105' : ''}
-          ${shake ? 'shake' : ''}`}
-        style={unlocking ? { transitionDelay: '900ms' } : undefined}
-      >
-        {/* ── App branding ── */}
-        <div className="flex flex-col items-center gap-4 mb-2">
-          {/* Shield icon — gradient tile with unlock animations */}
-          <div className="relative flex items-center justify-center">
-            {/* Expanding burst ring on unlock */}
-            {unlocking && (
-              <div className="absolute inset-[-10px] rounded-[32px] border-2 border-ok/65
-                              animate-[unlockBurst_1.0s_ease-out_forwards]" />
-            )}
-            {/* Spinning dashed halo on unlock */}
-            {unlocking && (
-              <div className="absolute w-32 h-32 rounded-full
-                              border-2 border-dashed border-ok/35
-                              animate-[lockRingSpin_1.6s_linear_infinite]" />
-            )}
-            <div
-              className={`w-[84px] h-[84px] rounded-[26px] flex items-center justify-center
-                          transition-all duration-300
-                          shadow-[0_4px_32px_rgba(99,102,241,0.35)]
-                          ${unlocking
-                            ? 'bg-gradient-to-br from-green-500 to-emerald-600 animate-[unlockIconSpin_1.0s_cubic-bezier(0.34,1.56,0.64,1)_both]'
-                            : 'bg-gradient-to-br from-indigo-500 to-purple-600'}`}
-            >
-              <ShieldCheck className="w-11 h-11 text-white drop-shadow-sm" />
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: `
+            radial-gradient(ellipse 72% 58% at 50% 24%, rgba(99,102,241,0.12) 0%, transparent 72%),
+            radial-gradient(circle at 88% 14%, rgba(99,102,241,0.1) 0%, transparent 32%)
+          `,
+        }}
+      />
+
+      <div className="relative z-10 flex h-full items-center justify-center overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
+        <div
+          className={`w-full max-w-[430px] transition-[opacity,transform] duration-500 ease-out
+            ${!mounted && !unlocking ? 'translate-y-6 opacity-0' : ''}
+            ${mounted && !unlocking ? 'translate-y-0 opacity-100' : ''}
+            ${unlocking ? 'scale-[0.97] opacity-0' : ''}
+            ${shake ? 'shake' : ''}`}
+        >
+          <div className="overflow-hidden rounded-[30px] border border-edge bg-card/90 shadow-[0_20px_80px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+            <div className="border-b border-edge/80 px-6 pb-4 pt-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex items-center gap-3">
+                  <div className="relative flex h-[68px] w-[68px] shrink-0 items-center justify-center">
+                    {!unlocking && (
+                      <div className="absolute -inset-[2px] overflow-hidden rounded-[20px]">
+                        <div
+                          className="absolute -left-1/2 -top-1/2 h-[200%] w-[200%] animate-[spin_5s_linear_infinite]"
+                          style={{
+                            background: 'conic-gradient(from 0deg, transparent 0%, rgba(99,102,241,0.55) 25%, rgba(168,85,247,0.75) 50%, rgba(99,102,241,0.55) 75%, transparent 100%)',
+                          }}
+                        />
+                      </div>
+                    )}
+                    {unlocking && (
+                      <div className="absolute inset-[-9px] rounded-[24px] border-2 border-ok/65 animate-[unlockBurst_1.0s_ease-out_forwards]" />
+                    )}
+                    {unlocking && (
+                      <div className="absolute h-24 w-24 rounded-full border-2 border-dashed border-ok/35 animate-[lockRingSpin_1.4s_linear_infinite]" />
+                    )}
+                    <div
+                      className={`relative z-10 flex h-[64px] w-[64px] items-center justify-center rounded-[20px]
+                        shadow-[0_4px_32px_rgba(99,102,241,0.35)] transition-all duration-300
+                        ${unlocking
+                          ? 'bg-gradient-to-br from-green-500 to-emerald-600 animate-[unlockIconSpin_1.0s_cubic-bezier(0.34,1.56,0.64,1)_both]'
+                          : 'bg-gradient-to-br from-indigo-500 to-purple-600'}`}
+                    >
+                      <ShieldCheck className="h-9 w-9 text-white drop-shadow-sm" />
+                    </div>
+                  </div>
+
+                  <div className="min-w-0">
+                    <h1 className="truncate text-[24px] font-bold leading-tight tracking-tight text-hi">SecurePass</h1>
+                    <p className="mt-0.5 truncate text-[12px] uppercase tracking-wide text-lo">NFC Password Manager</p>
+                  </div>
+                </div>
+
+                <div className="shrink-0 text-right">
+                  <p className="tabular-nums text-[25px] font-semibold leading-tight text-hi">
+                    {clock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </p>
+                  <p className="mt-1 text-[12px] text-lo">
+                    {clock.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 align-middle text-center">
+                <p className="text-[19px] font-semibold leading-tight text-hi">{title}</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-lo">{subtitle}</p>
+              </div>
+            </div>
+
+            <div className="px-6 pb-6 pt-5">
+              <div className="mb-3 flex items-center justify-center gap-2.5">
+                {Array.from({ length: PIN_LENGTH }).map((_, index) => (
+                  <div
+                    key={index}
+                    className={`rounded-full transition-all duration-150 ${
+                      index < pin.length
+                        ? 'h-3.5 w-3.5 scale-110 bg-accent'
+                        : 'h-3 w-3 border border-edge bg-input'
+                    }`}
+                  />
+                ))}
+              </div>
+
+              <div className="mb-3 h-5 text-center">
+                {error && <p className="text-[14px] text-err">{error}</p>}
+              </div>
+
+              <div className="mx-auto grid w-full max-w-[260px] grid-cols-3 gap-2.5">
+                {NUMBER_KEYS.map((digit) => (
+                  <button
+                    key={digit}
+                    onClick={() => handleDigit(digit)}
+                    disabled={unlocking}
+                    className="aspect-square w-full rounded-xl border border-edge bg-well text-[22px] font-medium text-hi
+                               transition-all duration-100 select-none
+                               hover:scale-[1.02] hover:border-edge2 hover:bg-input
+                               active:scale-[0.96] active:bg-input
+                               disabled:opacity-40"
+                  >
+                    {digit}
+                  </button>
+                ))}
+                <div />
+                <button
+                  onClick={() => handleDigit('0')}
+                  disabled={unlocking}
+                  className="aspect-square w-full rounded-xl border border-edge bg-well text-[22px] font-medium text-hi
+                             transition-all duration-100 select-none
+                             hover:scale-[1.02] hover:border-edge2 hover:bg-input
+                             active:scale-[0.96] active:bg-input
+                             disabled:opacity-40"
+                >
+                  0
+                </button>
+                <button
+                  onClick={handleBackspace}
+                  disabled={unlocking}
+                  aria-label="Delete digit"
+                  className="flex aspect-square w-full items-center justify-center rounded-xl border border-edge bg-well text-lo
+                             transition-all duration-100 select-none
+                             hover:scale-[1.02] hover:border-edge2 hover:bg-input hover:text-bright
+                             active:scale-[0.96] active:bg-input
+                             disabled:opacity-40"
+                >
+                  <Delete className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-edge/80 px-6 py-3">
+              <p className="text-center text-[11px] text-dim">v0.1.0 - Secured by MIFARE DESFire EV2</p>
             </div>
           </div>
 
-          {/* App name + subtitle */}
-          <div className="text-center">
-            <h1 className="text-[28px] font-bold tracking-tight text-hi leading-tight">SecurePass</h1>
-            <p className="text-[13px] text-lo mt-1 tracking-wide uppercase">NFC Password Manager</p>
-          </div>
+          <p className="mt-4 text-center text-[12px] text-dim">SecurePass - NFC Password Manager</p>
         </div>
-
-        {/* ── Divider ── */}
-        <div className="w-full max-w-[260px] border-t border-edge my-1" />
-
-        {/* ── PIN flow title ── */}
-        <div className="text-center">
-          <p className="text-[18px] font-semibold text-hi">{title}</p>
-          <p className="text-[14px] text-lo mt-1">{subtitle}</p>
-        </div>
-
-        {/* PIN dots */}
-        <div className="flex gap-3">
-          {Array.from({ length: PIN_LENGTH }).map((_, i) => (
-            <div
-              key={i}
-              className={`rounded-full transition-all duration-150 ${
-                i < pin.length
-                  ? 'w-3.5 h-3.5 bg-accent scale-125'
-                  : 'w-3 h-3 bg-input border border-edge'
-              }`}
-            />
-          ))}
-        </div>
-
-        {/* Error message */}
-        <div className="h-5">
-          {error && <p className="text-[15px] text-err text-center">{error}</p>}
-        </div>
-
-        {/* Numpad */}
-        <div className="grid grid-cols-3 gap-3">
-          {['1','2','3','4','5','6','7','8','9'].map(d => (
-            <button
-              key={d}
-              onClick={() => handleDigit(d)}
-              className="w-16 h-16 rounded-2xl bg-card border border-edge
-                         text-hi text-xl font-medium
-                         hover:bg-input hover:border-edge2 hover:scale-105
-                         active:scale-90 active:bg-input
-                         transition-all duration-100 select-none"
-            >
-              {d}
-            </button>
-          ))}
-          {/* Bottom row: empty / 0 / backspace */}
-          <div />
-          <button
-            onClick={() => handleDigit('0')}
-            className="w-16 h-16 rounded-2xl bg-card border border-edge
-                       text-hi text-xl font-medium
-                       hover:bg-input hover:border-edge2 hover:scale-105
-                       active:scale-90 active:bg-input
-                       transition-all duration-100 select-none"
-          >
-            0
-          </button>
-          <button
-            onClick={handleBackspace}
-            className="w-16 h-16 rounded-2xl bg-card border border-edge
-                       text-lo flex items-center justify-center
-                       hover:bg-input hover:border-edge2 hover:text-bright hover:scale-105
-                       active:scale-90 active:bg-input
-                       transition-all duration-100 select-none"
-          >
-            <Delete className="w-6 h-6" />
-          </button>
-        </div>
-
       </div>
     </div>
   );

@@ -679,8 +679,19 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
 
     if (autoClear) {
       console.log(`[clipboard] auto-clear armed — will fire in ${delay}s`);
-      setTimeout(() => {
-        console.log('[clipboard] auto-clear firing now');
+      setTimeout(async () => {
+        console.log('[clipboard] auto-clear firing — checking clipboard content');
+        try {
+          // Only clear if the clipboard still contains what we put there.
+          // If the user copied something else in the meantime, leave it alone.
+          const current = await window.electron['clipboard:read']();
+          if (current !== text) {
+            console.log('[clipboard] auto-clear skipped — clipboard content has changed');
+            return;
+          }
+        } catch (e) {
+          console.warn('[clipboard] auto-clear read failed, clearing anyway:', e);
+        }
         // Use the main-process IPC to clear — navigator.clipboard.writeText()
         // throws NotAllowedError when the document is not focused (Electron sandbox).
         window.electron['clipboard:clear']()

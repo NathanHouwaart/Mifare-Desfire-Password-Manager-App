@@ -20,6 +20,7 @@ function App() {
 
   const [unlocked,         setUnlocked]         = useState(false);
   const [locking,          setLocking]           = useState(false);
+  const [appVisible,       setAppVisible]        = useState(false);
   const [showSplash,       setShowSplash]        = useState(true);
   const [isTerminalOpen,   setIsTerminalOpen]    = useState(false);
   const [isNfcConnected,   setIsNfcConnected]    = useState(false);
@@ -93,6 +94,17 @@ function App() {
     };
   }, [unlocked]);
 
+  // Smooth in the main shell after unlock so the handoff from LockScreen
+  // doesn't feel like a hard layout swap.
+  useEffect(() => {
+    if (!unlocked) {
+      setAppVisible(false);
+      return;
+    }
+    const id = requestAnimationFrame(() => setAppVisible(true));
+    return () => cancelAnimationFrame(id);
+  }, [unlocked]);
+
   const toggleTheme = () =>
     setTheme(prev => {
       const next = prev === 'dark' ? 'light' : 'dark';
@@ -120,7 +132,10 @@ function App() {
 
       {/* Main app — shown when vault is unlocked */}
       {unlocked && (
-        <div className="flex h-full w-full overflow-hidden">
+        <div
+          className={`flex h-full w-full overflow-hidden transition-[opacity,transform] duration-300 ease-out
+            ${appVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'}`}
+        >
           <Sidebar
             onLock={() => setLocking(true)}
             isNfcConnected={isNfcConnected}
@@ -181,4 +196,3 @@ function App() {
 }
 
 export default App;
-
