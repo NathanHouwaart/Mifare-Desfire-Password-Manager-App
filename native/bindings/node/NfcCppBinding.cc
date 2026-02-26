@@ -17,9 +17,24 @@ NfcCppBinding::NfcCppBinding(const Napi::CallbackInfo& info)
 }
 
 NfcCppBinding::~NfcCppBinding() {
-    if (_hasLogCallback) {
+    try {
         _service->setLogCallback(nullptr); // clear handler before TSFN teardown
-        _logTsfn.Release();
+    } catch (...) {
+        // best-effort during teardown
+    }
+
+    if (_hasLogCallback) {
+        try {
+            _logTsfn.Abort();
+        } catch (...) {
+            // Ignore shutdown-time N-API state errors.
+        }
+        try {
+            _logTsfn.Release();
+        } catch (...) {
+            // Ignore shutdown-time N-API state errors.
+        }
+        _hasLogCallback = false;
     }
 }
 
@@ -724,16 +739,30 @@ Napi::Value NfcCppBinding::SetLogCallback(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
 
-    if (info.Length() < 1 || !info[0].IsFunction()) {
-        Napi::TypeError::New(env, "Expected a function").ThrowAsJavaScriptException();
+    // Clear callback when invoked with no args / null / undefined.
+    const bool shouldClear =
+        info.Length() < 1 || info[0].IsUndefined() || info[0].IsNull();
+    if (_hasLogCallback) {
+        _service->setLogCallback(nullptr);
+        try {
+            _logTsfn.Abort();
+        } catch (...) {
+            // Ignore transient teardown errors.
+        }
+        try {
+            _logTsfn.Release();
+        } catch (...) {
+            // Ignore transient teardown errors.
+        }
+        _hasLogCallback = false;
+    }
+    if (shouldClear) {
         return env.Undefined();
     }
 
-    // Release previous TSFN if any
-    if (_hasLogCallback) {
-        _service->setLogCallback(nullptr);
-        _logTsfn.Release();
-        _hasLogCallback = false;
+    if (!info[0].IsFunction()) {
+        Napi::TypeError::New(env, "Expected a function").ThrowAsJavaScriptException();
+        return env.Undefined();
     }
 
     _logTsfn = Napi::ThreadSafeFunction::New(

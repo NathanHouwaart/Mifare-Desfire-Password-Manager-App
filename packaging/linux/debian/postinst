@@ -1,0 +1,68 @@
+#!/bin/sh
+set -e
+# Debian postinst script: install udev rule and add user to dialout group.
+# Run as root by the package manager during package configuration.
+
+RULE_NAME=99-nfc-serial.rules
+DEST=/lib/udev/rules.d/$RULE_NAME
+
+# ── 1. Install udev rule ──────────────────────────────────────────────────────
+echo "[postinst] Installing udev rule..."
+
+# electron-builder installs extraResources to <installDir>/resources/
+# The actual path on a typical deb install is /opt/securepass/resources/udev/
+SEARCH_PATHS="
+  /opt/securepass/resources/udev
+  /opt/securepass/resources
+  /opt/securepass
+  /usr/share/securepass/resources/udev
+  /usr/share/securepass/resources
+  /usr/lib/securepass/resources/udev
+  /usr/lib/securepass/resources
+"
+
+FOUND=0
+for p in $SEARCH_PATHS; do
+  p=$(echo "$p" | tr -d ' ')
+  [ -z "$p" ] && continue
+  if [ -f "$p/$RULE_NAME" ]; then
+    cp -f "$p/$RULE_NAME" "$DEST"
+    chmod 0640 "$DEST"
+    chown root:dialout "$DEST" 2>/dev/null || chmod 0644 "$DEST"
+    FOUND=1
+    echo "[postinst] Installed $RULE_NAME from $p to $DEST"
+    break
+  fi
+done
+
+if [ "$FOUND" -eq 0 ]; then
+  echo "[postinst] WARNING: bundled udev rule not found; /dev/ttyUSB0 may require manual permission fix."
+fi
+
+# Reload udev so the new rule takes effect immediately
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm control --reload-rules || true
+  udevadm trigger --action=add || true
+fi
+
+# ── 2. Add the installing user to the dialout group ───────────────────────────
+# SUDO_USER is set when someone runs `sudo dpkg -i ...`
+# If empty, fall back to DBUS_SESSION_BUS_ADDRESS owner or skip.
+TARGET_USER="${SUDO_USER:-}"
+if [ -z "$TARGET_USER" ] && command -v logname >/dev/null 2>&1; then
+  TARGET_USER="$(logname 2>/dev/null || true)"
+fi
+
+if [ -n "$TARGET_USER" ] && id "$TARGET_USER" >/dev/null 2>&1; then
+  if ! id -nG "$TARGET_USER" | grep -qw dialout; then
+    usermod -aG dialout "$TARGET_USER"
+    echo "[postinst] Added $TARGET_USER to the dialout group."
+    echo "[postinst] NOTE: $TARGET_USER must log out and log back in (or reboot) for the group change to take effect."
+  else
+    echo "[postinst] $TARGET_USER is already in the dialout group."
+  fi
+else
+  echo "[postinst] Could not determine the installing user; please run: sudo usermod -aG dialout \$USER"
+fi
+
+exit 0

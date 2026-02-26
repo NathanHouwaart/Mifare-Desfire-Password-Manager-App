@@ -1,0 +1,13 @@
+# udev rules for common USB-to-UART adapters used with NFC readers
+# Copy this file to /etc/udev/rules.d/99-nfc-serial.rules (package installers do this automatically)
+# Replace or add vendor/product IDs for your exact hardware when known.
+
+# CP210x (Silicon Labs) - common USB-UART adapter used by many NFC devices
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0660", GROUP="dialout"
+
+# FTDI-based adapters
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0660", GROUP="dialout"
+
+# Generic rule: comment this out if you prefer explicit vendor/product rules.
+# Be cautious: MODE="0666" grants world read/write access to the device.
+# SUBSYSTEM=="tty", ENV{ID_VENDOR}=="?*", MODE="0666"

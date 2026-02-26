@@ -23,6 +23,10 @@ type UnixManifestTarget = {
   isFirefox: boolean;
 };
 
+export type NativeHostRegistrationResult =
+  | { ok: true; hostDir: string; registrationDir: string }
+  | { ok: false; error: string; hostDir?: string };
+
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -31,11 +35,36 @@ function uniqueStrings(values: readonly string[]): string[] {
   return Array.from(new Set(values.filter((v): v is string => typeof v === 'string' && v.length > 0)));
 }
 
-function getNativeHostDir(): string {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'native-host');
+function resolveBundledDirCandidates(dirName: string): string[] {
+  const appPath = app.getAppPath();
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    ?? path.resolve(appPath, '..');
+
+  return uniqueStrings([
+    path.join(resourcesPath, dirName),
+    path.join(resourcesPath, 'app.asar.unpacked', dirName),
+    path.resolve(appPath, dirName),
+    path.resolve(appPath, '..', dirName),
+    path.resolve(process.cwd(), dirName),
+  ]);
+}
+
+function firstExistingDir(candidates: readonly string[]): string | null {
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // Ignore unreadable candidates and continue.
+    }
   }
-  return path.resolve(app.getAppPath(), 'native-host');
+  return null;
+}
+
+function getNativeHostDir(): { resolved: string | null; candidates: string[] } {
+  const candidates = resolveBundledDirCandidates('native-host');
+  return { resolved: firstExistingDir(candidates), candidates };
 }
 
 function getRegistrationDir(): string {
@@ -269,12 +298,15 @@ function getUnixManifestTargets(homeDir: string): UnixManifestTarget[] {
   return [];
 }
 
-export function registerNativeHost(log: (msg: string) => void = console.log): void {
+export function registerNativeHost(
+  log: (msg: string) => void = console.log
+): NativeHostRegistrationResult {
   try {
-    const hostDir = getNativeHostDir();
-    if (!fs.existsSync(hostDir)) {
-      log(`[NativeHostRegistrar] native-host dir not found at ${hostDir}; skipping`);
-      return;
+    const { resolved: hostDir, candidates } = getNativeHostDir();
+    if (!hostDir) {
+      const msg = `[NativeHostRegistrar] native-host dir not found. Checked: ${candidates.join(', ')}`;
+      log(msg);
+      return { ok: false, error: msg };
     }
 
     const registrationDir = getRegistrationDir();
@@ -305,7 +337,7 @@ export function registerNativeHost(log: (msg: string) => void = console.log): vo
       setRegistryKey(CHROME_REG_KEY, registrationChromeManifest);
       setRegistryKey(FIREFOX_REG_KEY, registrationFirefoxManifest);
       log(`[NativeHostRegistrar] registered on Windows. launcher=${launcherPath}`);
-      return;
+      return { ok: true, hostDir, registrationDir };
     }
 
     for (const target of unixTargets) {
@@ -324,7 +356,10 @@ export function registerNativeHost(log: (msg: string) => void = console.log): vo
     }
 
     log(`[NativeHostRegistrar] registered on ${process.platform}. launcher=${launcherPath} node=${nodeExe}`);
+    return { ok: true, hostDir, registrationDir };
   } catch (err) {
-    log(`[NativeHostRegistrar] registration failed: ${(err as Error).message}`);
+    const message = err instanceof Error ? err.message : String(err);
+    log(`[NativeHostRegistrar] registration failed: ${message}`);
+    return { ok: false, error: message };
   }
 }

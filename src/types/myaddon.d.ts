@@ -8,7 +8,7 @@ declare module '../../build/myaddon.node' {
     constructor();
     connect(port: string): Promise<string>;
     disconnect(): Promise<boolean>;
-    setLogCallback(callback: (level: string, message: string) => void): void;
+    setLogCallback(callback?: (level: string, message: string) => void): void;
   }
 }
 

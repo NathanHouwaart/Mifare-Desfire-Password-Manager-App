@@ -3,6 +3,8 @@ import { SerialPort } from 'serialport';
 import fs from 'fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import type { Server } from 'node:net';
 import { isDev } from './utils.js';
 import { MyLibraryBinding, NfcCppBinding } from './bindings.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
@@ -25,6 +27,8 @@ process.on('unhandledRejection', (reason, promise) => {
 
 let mainWindow: BrowserWindow | null = null;
 let nfcBinding: NfcCppBinding | null = null;
+let bridgeServer: Server | null = null;
+let shutdownInProgress = false;
 const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twice from 100%
 const ZOOM_SHORTCUT_KEYS = new Set(['+', '=', '-', '_', '0', 'Add', 'Subtract', 'NumpadAdd', 'NumpadSubtract']);
 
@@ -105,6 +109,86 @@ function isZoomInput(input: Electron.Input): boolean {
   return ZOOM_SHORTCUT_KEYS.has(input.key);
 }
 
+function resolveBundledDirCandidates(dirName: string): string[] {
+  const appPath = app.getAppPath();
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    ?? path.resolve(appPath, '..');
+
+  return Array.from(new Set([
+    path.join(resourcesPath, dirName),
+    path.join(resourcesPath, 'app.asar.unpacked', dirName),
+    path.resolve(appPath, dirName),
+    path.resolve(appPath, '..', dirName),
+    path.resolve(process.cwd(), dirName),
+  ]));
+}
+
+function firstExistingDir(candidates: readonly string[]): string | null {
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // Ignore invalid candidates and continue searching.
+    }
+  }
+  return null;
+}
+
+async function openFolderWithFallback(dir: string): Promise<string | null> {
+  const timeoutToken = '__OPEN_PATH_TIMEOUT__';
+  const timeoutMs = 3500;
+
+  const openPathPromise = shell.openPath(dir)
+    .then((result) => result ?? '')
+    .catch((err: unknown) => (err instanceof Error ? err.message : String(err)));
+
+  const result = await Promise.race<string>([
+    openPathPromise,
+    new Promise<string>((resolve) => setTimeout(() => resolve(timeoutToken), timeoutMs)),
+  ]);
+
+  if (result !== timeoutToken) {
+    return result.length === 0 ? null : result;
+  }
+
+  if (process.platform === 'linux') {
+    try {
+      const child = spawn('xdg-open', [dir], { detached: true, stdio: 'ignore' });
+      child.unref();
+      return null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `Timed out waiting for shell.openPath and xdg-open failed: ${msg}`;
+    }
+  }
+
+  return `Timed out waiting for shell.openPath after ${timeoutMs}ms`;
+}
+
+async function closeBridgeServer(
+  server: Server,
+  timeoutMs = 1000
+): Promise<void> {
+  if (!server.listening) return;
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    const timer = setTimeout(done, timeoutMs);
+    server.close(() => {
+      clearTimeout(timer);
+      done();
+    });
+  });
+}
+
 app.on('ready', () => {
   console.log('[MAIN.TS] App ready event fired');
 
@@ -121,7 +205,7 @@ app.on('ready', () => {
   registerVaultHandlers(nfcBinding, nfcLog);
 
   // Start the named-pipe bridge that feeds the browser extension.
-  startBridgeServer(nfcBinding, nfcLog);
+  bridgeServer = startBridgeServer(nfcBinding, nfcLog);
 
   // Keep the native messaging host registration up-to-date so the browser
   // extension always points to the correct install location.
@@ -138,16 +222,30 @@ app.on('ready', () => {
 
   // Browser extension helpers
   ipcMain.handle('extension:open-folder', async () => {
-    const extDir = app.isPackaged
-      ? path.join(process.resourcesPath, 'extension')
-      : path.resolve(app.getAppPath(), 'extension');
-    await shell.openPath(extDir);
+    try {
+      const candidates = resolveBundledDirCandidates('extension');
+      const extDir = firstExistingDir(candidates);
+      if (!extDir) {
+        return { ok: false, error: `Extension folder not found. Checked: ${candidates.join(', ')}` };
+      }
+
+      const openError = await openFolderWithFallback(extDir);
+      if (openError) {
+        return { ok: false, error: `Failed to open extension folder: ${openError}`, path: extDir };
+      }
+
+      return { ok: true, path: extDir };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 
   ipcMain.handle('extension:reload-registration', () => {
     try {
-      registerNativeHost((msg) => nfcLog('info', msg));
-      return { ok: true };
+      const result = registerNativeHost((msg) => nfcLog('info', msg));
+      return result.ok
+        ? { ok: true }
+        : { ok: false, error: result.error };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
@@ -387,21 +485,48 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('before-quit', async () => {
-  if (nfcBinding) {
+app.on('before-quit', (event) => {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
+  event.preventDefault();
+
+  void (async () => {
     try {
-      await nfcBinding.disconnect();
-    } catch {
-      // best-effort — process is exiting regardless
+      // Stop new extension-host requests and cancel any active card wait loop.
+      cancelCardWait();
+      if (bridgeServer) {
+        try {
+          await closeBridgeServer(bridgeServer);
+        } catch {
+          // best-effort
+        }
+        bridgeServer = null;
+      }
+
+      if (nfcBinding) {
+        try {
+          // Clear TSFN-backed logger while JS runtime is still alive.
+          nfcBinding.setLogCallback();
+        } catch {
+          // best-effort
+        }
+        try {
+          await nfcBinding.disconnect();
+        } catch {
+          // best-effort — process is exiting regardless
+        }
+      }
+    } finally {
+      // Close vault DB gracefully.
+      closeVault();
+
+      // Zeroize machine secret before process exits.
+      if (machineSecret) {
+        machineSecret.fill(0);
+        machineSecret = null;
+      }
+
+      app.exit(0);
     }
-  }
-
-  // Close vault DB gracefully.
-  closeVault();
-
-  // Zeroize machine secret before process exits.
-  if (machineSecret) {
-    machineSecret.fill(0);
-    machineSecret = null;
-  }
+  })();
 });

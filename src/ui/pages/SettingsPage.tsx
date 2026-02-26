@@ -148,6 +148,8 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [importFeedback, setImportFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
   const [extRegBusy,  setExtRegBusy]  = useState(false);
   const [extRegFeedback, setExtRegFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+  const [extFolderBusy, setExtFolderBusy] = useState(false);
+  const [extFolderFeedback, setExtFolderFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
 
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
@@ -218,8 +220,19 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }
   };
 
-  const handleOpenExtensionFolder = () => {
-    window.electron['extension:open-folder']();
+  const handleOpenExtensionFolder = async () => {
+    setExtFolderBusy(true); setExtFolderFeedback(null);
+    try {
+      const res = await window.electron['extension:open-folder']();
+      setExtFolderFeedback(res.ok
+        ? { type: 'ok', message: res.path ? `Opened: ${res.path}` : 'Extension folder opened.' }
+        : { type: 'err', message: res.error ?? 'Failed to open extension folder.' });
+    } catch (e) {
+      setExtFolderFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setExtFolderBusy(false);
+      setTimeout(() => setExtFolderFeedback(null), 7000);
+    }
   };
 
   // ── Settings search ─────────────────────────────────────────────
@@ -467,7 +480,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
               <ButtonRow
                 label="Open Extension Folder"
                 description="Opens the bundled extension in File Explorer so you can load it in your browser"
-                buttonLabel="Open Folder"
+                buttonLabel={extFolderBusy ? 'Opening…' : 'Open Folder'}
+                busy={extFolderBusy}
+                feedback={extFolderFeedback}
                 onClick={handleOpenExtensionFolder}
               />
             )}

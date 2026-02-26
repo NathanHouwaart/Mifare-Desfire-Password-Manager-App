@@ -85,6 +85,13 @@ type VaultImportResultDto = {
   error?:    string;
 };
 
+/** Result of opening the bundled browser extension folder. */
+type ExtensionOpenFolderResultDto = {
+  ok:    boolean;
+  path?: string;
+  error?: string;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 type RendererEvents = {
@@ -143,8 +150,8 @@ type IPCHandlers = {
   'vault:import': () => Promise<VaultImportResultDto>;
 
   // ── Browser extension helpers ────────────────────────────────────────
-  /** Opens the bundled extension folder in Windows Explorer. */
-  'extension:open-folder': () => Promise<void>;
+  /** Opens the bundled extension folder in the OS file manager. */
+  'extension:open-folder': () => Promise<ExtensionOpenFolderResultDto>;
   /** Re-runs the native messaging host registration (rewrites bat + registry keys). */
   'extension:reload-registration': () => Promise<{ ok: boolean; error?: string }>;
 };

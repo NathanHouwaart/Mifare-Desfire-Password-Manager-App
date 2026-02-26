@@ -4,6 +4,7 @@ cmake_policy(SET CMP0042 NEW)
 
 project(myaddon VERSION 1.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 if(MSVC)
     add_compile_options(/MP)
@@ -30,6 +31,7 @@ file(GLOB_RECURSE CORE_FILES CONFIGURE_DEPENDS
 )
 add_library(core_lib STATIC ${CORE_FILES})
 target_include_directories(core_lib PUBLIC "${CMAKE_SOURCE_DIR}/native")
+set_target_properties(core_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # 3. Hardware Adapters
 file(GLOB_RECURSE ADAPTER_FILES CONFIGURE_DEPENDS
