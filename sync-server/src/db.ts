@@ -28,6 +28,17 @@ async function runMigrations(pool: Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS mfa_secret TEXT;
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS mfa_pending_secret TEXT;
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS mfa_pending_created_at TIMESTAMPTZ;
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS mfa_enrolled_at TIMESTAMPTZ;
+
     CREATE TABLE IF NOT EXISTS devices (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

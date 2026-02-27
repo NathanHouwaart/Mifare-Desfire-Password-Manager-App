@@ -11,6 +11,7 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL: z.string().default('30d'),
   BOOTSTRAP_TOKEN: z.string().min(16),
+  MFA_ISSUER: z.string().min(1).default('SecurePass'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1000).default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().int().min(10).default(100),
 });
