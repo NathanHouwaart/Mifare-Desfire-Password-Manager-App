@@ -79,7 +79,7 @@ After bootstrap, the endpoint returns `409` and cannot be reused unless DB is re
   - endpoint/username/device config
   - register/login/logout
   - MFA setup/enable/disable
-  - vault key envelope init/unlock/lock
+  - vault key prepare/lock
   - manual `Sync Now`
   - local sync reset
 - Main process runs background sync every 2 minutes when sync is configured and logged in.
@@ -87,11 +87,12 @@ After bootstrap, the endpoint returns `409` and cannot be reused unless DB is re
 ## Portable key flow (Phase 1)
 - On your first/original device:
   - Login to sync.
-  - In Settings -> Sync -> Vault Key, click `Initialize` once.
-  - This wraps the current local machine secret into a password-protected envelope and uploads it.
+  - The app prepares the shared vault key automatically using your sync account password.
+  - It wraps the current local machine secret into an account-password-protected envelope and uploads it.
 - On each additional device:
   - Login to sync.
-  - In Settings -> Sync -> Vault Key, enter the same passphrase and click `Unlock`.
+  - The app unlocks the vault key using your sync account password.
+  - If auto-prepare fails, use Settings -> Sync -> Advanced -> `Prepare Vault Key`.
   - Card auth + entry decrypt now use the unlocked shared root key, so the same DESFire card works across devices.
 
 Notes:

@@ -128,6 +128,10 @@ type SyncMfaSetupDto = {
   otpauthUrl: string;
 };
 
+type SyncVaultKeyPasswordDto = {
+  password: string;
+};
+
 type SyncVaultKeyPassphraseDto = {
   passphrase: string;
 };
@@ -285,9 +289,11 @@ type IPCHandlers = {
   'sync:getVaultKeyEnvelope': () => Promise<SyncVaultKeyEnvelopeDto | null>;
   /** Returns local+remote vault key manager status. */
   'sync:getVaultKeyStatus': () => Promise<SyncVaultKeyStatusDto>;
-  /** Creates a new vault root key envelope and uploads it to the sync server. */
+  /** Initializes or unlocks the synced vault key using the account password. */
+  'sync:prepareVaultKey': (payload: SyncVaultKeyPasswordDto) => Promise<SyncVaultKeyStatusDto>;
+  /** Deprecated compatibility channel, routes to sync:prepareVaultKey. */
   'sync:initVaultKey': (payload: SyncVaultKeyPassphraseDto) => Promise<SyncVaultKeyStatusDto>;
-  /** Downloads and unlocks the vault root key envelope into local process memory. */
+  /** Deprecated compatibility channel, routes to sync:prepareVaultKey. */
   'sync:unlockVaultKey': (payload: SyncVaultKeyPassphraseDto) => Promise<SyncVaultKeyStatusDto>;
   /** Clears locally-unlocked vault root key from process memory. */
   'sync:lockVaultKey': () => Promise<SyncVaultKeyStatusDto>;

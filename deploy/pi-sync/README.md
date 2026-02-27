@@ -70,7 +70,7 @@ When you click `Use Synced` or `Open Sync Wizard`, fill:
 | `Device Name` | Friendly device label | `desktop-main`, `laptop-mac` |
 | `Sync Password` | Account password for sync login/register | your chosen strong password |
 | `Authenticator Code` | 6-digit TOTP from app (after MFA setup) | `123456` |
-| `Vault Key Passphrase` | Passphrase used to wrap shared vault key, must be the same on all your devices | long memorable passphrase |
+| `Account Password (for Vault Key)` | Same sync account password, used to prepare/unlock vault key on device | same as `Sync Password` |
 
 ## 5. First device flow
 
@@ -78,7 +78,7 @@ When you click `Use Synced` or `Open Sync Wizard`, fill:
 2. Enter `Sync URL`, `Username`, `Device Name`.
 3. Register account with `Sync Password` (or login if account already exists).
 4. Setup MFA and enable it with 6-digit code.
-5. Initialize vault key with `Vault Key Passphrase`.
+5. Vault key is prepared automatically from your account password.
 6. Finish wizard.
 
 ## 6. Second device flow
@@ -86,7 +86,7 @@ When you click `Use Synced` or `Open Sync Wizard`, fill:
 1. Open wizard.
 2. Enter same `Sync URL` and same `Username`.
 3. Login with same `Sync Password` and MFA code.
-4. Unlock vault key using the same `Vault Key Passphrase` from first device.
+4. If prompted, prepare/unlock vault key using your account password.
 5. Finish wizard and sync.
 
 ## 7. Local vs Synced mode
@@ -95,4 +95,3 @@ When you click `Use Synced` or `Open Sync Wizard`, fill:
 - `Use Synced`: opens the wizard for account setup/login and key unlock.
 
 You can switch modes later from Settings.
-

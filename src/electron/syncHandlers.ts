@@ -30,6 +30,37 @@ export function registerSyncHandlers(
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
   deps?: { getMachineSecret?: () => Buffer }
 ): void {
+  const prepareVaultKeyWithPassword = async (password: string): Promise<'initialized' | 'unlocked'> => {
+    if (!password || password.trim().length === 0) {
+      throw new Error('Account password is required to prepare vault key');
+    }
+
+    const existing = await getSyncKeyEnvelope();
+    if (existing === null) {
+      // Re-wrap existing local machine secret so previously-encrypted entries remain readable.
+      const existingSecret = deps?.getMachineSecret ? deps.getMachineSecret() : undefined;
+      const { envelope, rootKey } = createVaultRootKeyEnvelope(password, {
+        keyVersion: 2,
+        rootKey: existingSecret,
+      });
+      try {
+        await setSyncKeyEnvelope(envelope);
+        setUnlockedVaultRootKey(rootKey, envelope.keyVersion);
+      } finally {
+        rootKey.fill(0);
+      }
+      return 'initialized';
+    }
+
+    const rootKey = decryptVaultRootKeyFromEnvelope(password, existing);
+    try {
+      setUnlockedVaultRootKey(rootKey, existing.keyVersion);
+    } finally {
+      rootKey.fill(0);
+    }
+    return 'unlocked';
+  };
+
   const buildVaultKeyStatus = async (): Promise<SyncVaultKeyStatusDto> => {
     const syncStatus = getSyncStatus();
     const local = getVaultKeyUnlockState();
@@ -87,6 +118,14 @@ export function registerSyncHandlers(
     const status = await registerSync(payload.password);
     log('info', `sync:register - account created for ${status.username}`);
     try {
+      const mode = await prepareVaultKeyWithPassword(payload.password);
+      log('info', `sync:register - vault key ${mode} using account password`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log('warn', `sync:register vault-key prepare failed - ${msg}`);
+      throw err;
+    }
+    try {
       const result = await runFullSync();
       log(
         'info',
@@ -103,6 +142,14 @@ export function registerSyncHandlers(
   ipcMain.handle('sync:login', async (_ev, payload: SyncLoginDto) => {
     const status = await loginSync(payload.password, payload.mfaCode);
     log('info', `sync:login - authenticated as ${status.username}`);
+    try {
+      const mode = await prepareVaultKeyWithPassword(payload.password);
+      log('info', `sync:login - vault key ${mode} using account password`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log('warn', `sync:login vault-key prepare failed - ${msg}`);
+      throw err;
+    }
     try {
       const result = await runFullSync();
       log(
@@ -154,44 +201,30 @@ export function registerSyncHandlers(
     return buildVaultKeyStatus();
   });
 
-  ipcMain.handle('sync:initVaultKey', async (_ev, payload: SyncVaultKeyPassphraseDto) => {
+  ipcMain.handle('sync:prepareVaultKey', async (_ev, payload: SyncVaultKeyPasswordDto) => {
+    const mode = await prepareVaultKeyWithPassword(payload.password);
+    log('info', `sync:prepareVaultKey - vault key ${mode} with account password`);
+    return buildVaultKeyStatus();
+  });
+
+  // Deprecated compatibility channels (old renderer builds still call these).
+  ipcMain.handle('sync:initVaultKey', async (_ev, payload: { passphrase: string }) => {
     const existing = await getSyncKeyEnvelope();
     if (existing !== null) {
       throw new Error('Vault key envelope already exists. Use unlock instead.');
     }
-
-    // Migrate seamlessly by wrapping the existing local machine secret.
-    // This keeps legacy cards/entries readable across newly-added devices.
-    const existingSecret = deps?.getMachineSecret ? deps.getMachineSecret() : undefined;
-    const { envelope, rootKey } = createVaultRootKeyEnvelope(payload.passphrase, {
-      keyVersion: 2,
-      rootKey: existingSecret,
-    });
-    try {
-      await setSyncKeyEnvelope(envelope);
-      setUnlockedVaultRootKey(rootKey, envelope.keyVersion);
-    } finally {
-      rootKey.fill(0);
-    }
-
-    log('info', 'sync:initVaultKey - created and uploaded vault key envelope');
+    const mode = await prepareVaultKeyWithPassword(payload.passphrase);
+    log('warn', `sync:initVaultKey (compat) - routed to prepareVaultKey (${mode})`);
     return buildVaultKeyStatus();
   });
 
-  ipcMain.handle('sync:unlockVaultKey', async (_ev, payload: SyncVaultKeyPassphraseDto) => {
-    const envelope = await getSyncKeyEnvelope();
-    if (envelope === null) {
+  ipcMain.handle('sync:unlockVaultKey', async (_ev, payload: { passphrase: string }) => {
+    const existing = await getSyncKeyEnvelope();
+    if (existing === null) {
       throw new Error('No vault key envelope found on server. Initialize it first.');
     }
-
-    const rootKey = decryptVaultRootKeyFromEnvelope(payload.passphrase, envelope);
-    try {
-      setUnlockedVaultRootKey(rootKey, envelope.keyVersion);
-    } finally {
-      rootKey.fill(0);
-    }
-
-    log('info', `sync:unlockVaultKey - unlocked key version ${envelope.keyVersion}`);
+    const mode = await prepareVaultKeyWithPassword(payload.passphrase);
+    log('warn', `sync:unlockVaultKey (compat) - routed to prepareVaultKey (${mode})`);
     return buildVaultKeyStatus();
   });
 

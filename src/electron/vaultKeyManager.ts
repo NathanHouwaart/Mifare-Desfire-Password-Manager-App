@@ -21,7 +21,7 @@ let unlockedKeyVersion: number | null = null;
 
 function assertPassphrase(passphrase: string): void {
   if (passphrase.length < 10) {
-    throw new Error('Passphrase must be at least 10 characters');
+    throw new Error('Password must be at least 10 characters');
   }
 }
 
@@ -182,4 +182,3 @@ export function getVaultKeyUnlockState(): {
     unlockedAt: unlockedAt ?? undefined,
   };
 }
-

@@ -80,6 +80,12 @@ function toFriendlySyncError(error: unknown): string {
   if (text.includes('sync api 500')) {
     return 'Server error. Check if your sync server is running, then try again.';
   }
+  if (text.includes('unable to authenticate data')) {
+    return 'This account still uses an older vault-key setup. Recreate the server key envelope from your original device, then login again.';
+  }
+  if (text.includes("no handler registered for 'sync:preparevaultkey'")) {
+    return 'App update mismatch detected. Restart SecurePass (or reinstall the latest build) and try again.';
+  }
 
   return raw;
 }
@@ -99,7 +105,8 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
   const [deviceName, setDeviceName] = useState('');
   const [password, setPassword] = useState('');
   const [mfaCode, setMfaCode] = useState('');
-  const [vaultPassphrase, setVaultPassphrase] = useState('');
+  const [vaultPassword, setVaultPassword] = useState('');
+  const [vaultAutoAttempted, setVaultAutoAttempted] = useState(false);
   const [accountMode, setAccountMode] = useState<AccountMode>('choose');
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
@@ -235,7 +242,7 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
       setMfaSetup(null);
       setMfaStatus(null);
       setVaultStatus(null);
-      setVaultPassphrase('');
+      setVaultPassword('');
       setMode(null);
       setMessage({ type: 'ok', text: 'Sync reset on this device. Choose Local or Synced to continue.' });
     } catch (e) {
@@ -276,6 +283,7 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
     setMessage(null);
     try {
       await window.electron['sync:register']({ password });
+      setVaultPassword(password);
       setPassword('');
       setMfaCode('');
       setMfaSetup(null);
@@ -300,6 +308,7 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
         password,
         mfaCode: mfaCode.trim() || undefined,
       });
+      setVaultPassword(password);
       setPassword('');
       setMfaCode('');
       await refreshAll();
@@ -347,21 +356,35 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
   };
 
   const handleVaultStep = async () => {
-    if (!vaultPassphrase.trim()) {
-      setMessage({ type: 'err', text: 'Vault key passphrase is required.' });
+    if (!vaultPassword.trim()) {
+      setMessage({ type: 'err', text: 'Account password is required.' });
       return;
     }
     setBusy(true);
     setMessage(null);
     try {
-      if (!vaultStatus?.hasRemoteEnvelope) {
-        await window.electron['sync:initVaultKey']({ passphrase: vaultPassphrase });
-        setMessage({ type: 'ok', text: 'Shared vault key initialized.' });
-      } else {
-        await window.electron['sync:unlockVaultKey']({ passphrase: vaultPassphrase });
-        setMessage({ type: 'ok', text: 'Vault key unlocked on this device.' });
+      try {
+        await window.electron['sync:prepareVaultKey']({ password: vaultPassword });
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        if (raw.toLowerCase().includes("no handler registered for 'sync:preparevaultkey'")) {
+          // Legacy IPC fallback for out-of-sync app binaries.
+          if (!vaultStatus?.hasRemoteEnvelope) {
+            await window.electron['sync:initVaultKey']({ passphrase: vaultPassword });
+          } else {
+            await window.electron['sync:unlockVaultKey']({ passphrase: vaultPassword });
+          }
+        } else {
+          throw err;
+        }
       }
-      setVaultPassphrase('');
+      setMessage({
+        type: 'ok',
+        text: !vaultStatus?.hasRemoteEnvelope
+          ? 'Shared vault key initialized from your account password.'
+          : 'Vault key unlocked on this device.',
+      });
+      setVaultPassword('');
       await refreshVaultStatus(true);
       await refreshAll();
     } catch (e) {
@@ -370,6 +393,18 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
       setBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (syncedStep !== 'vault') {
+      setVaultAutoAttempted(false);
+      return;
+    }
+    if (busy || vaultAutoAttempted) return;
+    if (!vaultPassword.trim()) return;
+    setVaultAutoAttempted(true);
+    void handleVaultStep();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncedStep, vaultPassword, busy, vaultAutoAttempted]);
 
   const handleFinishSynced = () => {
     localStorage.setItem('setting-sync-mode', 'synced');
@@ -628,7 +663,7 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
                         <label className="text-[11px] text-dim uppercase tracking-wide mb-1.5 block">Choose a password</label>
                         <input type="password" value={password} onChange={e => setPassword(e.target.value)}
                           placeholder="Password for your sync account" className={inputClass} />
-                        <p className="mt-1 text-[11px] text-dim">This is separate from your vault passphrase.</p>
+                        <p className="mt-1 text-[11px] text-dim">This same password is also used to unlock your synced vault key.</p>
                       </div>
                       <button onClick={handleRegister} disabled={busy}
                         className={`${primaryButtonClass} flex items-center justify-center gap-2 w-full mt-1`}>
@@ -759,25 +794,25 @@ export const OnboardingScreen = ({ initialMode = null, onCancel, onComplete, asM
                       </div>
                       <div>
                         <h2 className="text-[18px] font-semibold text-hi">
-                          {!vaultStatus?.hasRemoteEnvelope ? 'Set a vault passphrase' : 'Enter your vault passphrase'}
+                          {!vaultStatus?.hasRemoteEnvelope ? 'Finalize vault key setup' : 'Unlock this device vault key'}
                         </h2>
                         <p className="mt-1 text-[13px] text-lo">
                           {!vaultStatus?.hasRemoteEnvelope
-                            ? 'This passphrase protects your passwords in the cloud.'
-                            : 'Enter the passphrase you used when you first set up syncing.'}
+                            ? 'We use your account password to initialize your shared vault key.'
+                            : 'Usually this is automatic after login. If shown, enter your account password once.'}
                         </p>
                       </div>
                     </div>
                     <div className="flex flex-col gap-3">
                       {!vaultStatus?.hasRemoteEnvelope && (
                         <div className="rounded-xl border border-warn-edge bg-warn-soft p-3 text-[12px] text-warn">
-                          âš  Write this passphrase down somewhere safe. You need it on every new device. If you lose it, your passwords cannot be recovered.
+                          Use your sync account password here. There is no separate vault passphrase anymore.
                         </div>
                       )}
                       <div>
-                        <label className="text-[11px] text-dim uppercase tracking-wide mb-1.5 block">Vault Passphrase</label>
-                        <input type="password" value={vaultPassphrase} onChange={e => setVaultPassphrase(e.target.value)}
-                          placeholder="Vault key passphrase" className={inputClass} />
+                        <label className="text-[11px] text-dim uppercase tracking-wide mb-1.5 block">Account Password</label>
+                        <input type="password" value={vaultPassword} onChange={e => { setVaultPassword(e.target.value); setVaultAutoAttempted(false); }}
+                          placeholder="Your sync account password" className={inputClass} />
                       </div>
                       <button onClick={handleVaultStep} disabled={busy}
                         className={`${primaryButtonClass} flex items-center justify-center gap-2 w-full mt-1`}>

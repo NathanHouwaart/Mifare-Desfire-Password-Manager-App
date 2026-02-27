@@ -173,7 +173,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [syncHydrated, setSyncHydrated] = useState(false);
   const [syncAdvancedOpen, setSyncAdvancedOpen] = useState(false);
   const [vaultKeyStatus, setVaultKeyStatus] = useState<SyncVaultKeyStatusDto | null>(null);
-  const [vaultKeyPassphrase, setVaultKeyPassphrase] = useState('');
+  const [vaultKeyPassword, setVaultKeyPassword] = useState('');
   const [vaultKeyBusy, setVaultKeyBusy] = useState(false);
 
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
@@ -266,6 +266,18 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     window.setTimeout(() => setSyncFeedback(null), timeoutMs);
   };
 
+  const toFriendlySyncError = (error: unknown): string => {
+    const raw = error instanceof Error ? error.message : String(error);
+    const text = raw.toLowerCase();
+    if (text.includes('unable to authenticate data')) {
+      return 'This account still uses an older vault-key setup. Recreate the key envelope from your original device, then login again.';
+    }
+    if (text.includes("no handler registered for 'sync:preparevaultkey'")) {
+      return 'App update mismatch detected. Restart SecurePass (or reinstall the latest build) and try again.';
+    }
+    return raw;
+  };
+
   const refreshSyncStatus = async (hydrateInputs = false): Promise<SyncStatusDto | null> => {
     try {
       const status = await window.electron['sync:getStatus']();
@@ -334,7 +346,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         setVaultKeyStatus(null);
         setSyncPassword('');
         setSyncMfaCode('');
-        setVaultKeyPassphrase('');
+        setVaultKeyPassword('');
       } else {
         void (async () => {
           const status = await refreshSyncStatus(true);
@@ -393,6 +405,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       const status = await window.electron['sync:register']({
         password: syncPassword,
       });
+      setVaultKeyPassword(syncPassword);
       setSyncStatus(status);
       setSyncPassword('');
       setSyncMfaCode('');
@@ -420,6 +433,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         password: syncPassword,
         mfaCode: syncMfaCode.trim() || undefined,
       });
+      setVaultKeyPassword(syncPassword);
       setSyncStatus(status);
       setSyncPassword('');
       setSyncMfaCode('');
@@ -541,7 +555,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncMfaStatus(null);
       setSyncMfaSetup(null);
       syncFeedbackFor('ok', 'Sync config and session removed.');
-      setVaultKeyPassphrase('');
+      setVaultKeyPassword('');
       await refreshVaultKeyStatus();
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
@@ -570,7 +584,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncMfaCode('');
       setSyncMfaStatus(null);
       setSyncMfaSetup(null);
-      setVaultKeyPassphrase('');
+      setVaultKeyPassword('');
       setVaultKeyStatus(null);
       setSyncMode(next);
       localStorage.setItem('setting-sync-mode', next);
@@ -587,39 +601,33 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     window.dispatchEvent(new CustomEvent('securepass:open-sync-wizard', { detail: { mode: 'synced' } }));
   };
 
-  const handleInitVaultKey = async () => {
-    if (!vaultKeyPassphrase.trim()) {
-      syncFeedbackFor('err', 'Vault key passphrase is required.');
+  const handlePrepareVaultKey = async () => {
+    if (!vaultKeyPassword.trim()) {
+      syncFeedbackFor('err', 'Account password is required.');
       return;
     }
     setVaultKeyBusy(true);
     setSyncFeedback(null);
     try {
-      const status = await window.electron['sync:initVaultKey']({ passphrase: vaultKeyPassphrase });
+      let status: SyncVaultKeyStatusDto;
+      try {
+        status = await window.electron['sync:prepareVaultKey']({ password: vaultKeyPassword });
+      } catch (err) {
+        const raw = err instanceof Error ? err.message : String(err);
+        if (raw.toLowerCase().includes("no handler registered for 'sync:preparevaultkey'")) {
+          const legacyPayload = { passphrase: vaultKeyPassword };
+          status = vaultKeyStatus?.hasRemoteEnvelope
+            ? await window.electron['sync:unlockVaultKey'](legacyPayload)
+            : await window.electron['sync:initVaultKey'](legacyPayload);
+        } else {
+          throw err;
+        }
+      }
       setVaultKeyStatus(status);
-      setVaultKeyPassphrase('');
-      syncFeedbackFor('ok', 'Vault key initialized and uploaded.');
+      setVaultKeyPassword('');
+      syncFeedbackFor('ok', status.hasRemoteEnvelope ? 'Vault key prepared on this device.' : 'Vault key status updated.');
     } catch (e) {
-      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
-    } finally {
-      setVaultKeyBusy(false);
-    }
-  };
-
-  const handleUnlockVaultKey = async () => {
-    if (!vaultKeyPassphrase.trim()) {
-      syncFeedbackFor('err', 'Vault key passphrase is required.');
-      return;
-    }
-    setVaultKeyBusy(true);
-    setSyncFeedback(null);
-    try {
-      const status = await window.electron['sync:unlockVaultKey']({ passphrase: vaultKeyPassphrase });
-      setVaultKeyStatus(status);
-      setVaultKeyPassphrase('');
-      syncFeedbackFor('ok', 'Vault key unlocked locally.');
-    } catch (e) {
-      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+      syncFeedbackFor('err', toFriendlySyncError(e));
     } finally {
       setVaultKeyBusy(false);
     }
@@ -631,7 +639,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     try {
       const status = await window.electron['sync:lockVaultKey']();
       setVaultKeyStatus(status);
-      setVaultKeyPassphrase('');
+      setVaultKeyPassword('');
       syncFeedbackFor('ok', 'Vault key locked locally.');
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
@@ -659,7 +667,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     sync:       show('Sync Status', 'Background sync every 2 minutes when logged in')
              || show('Sync URL', 'Username', 'Device Name', 'Local', 'Synced', 'Advanced')
              || show('Save Config', 'Register', 'Login', 'MFA', 'Authenticator', 'Sync Now', 'Logout', 'Reset Sync')
-             || show('Vault Key', 'Initialize', 'Unlock', 'Lock', 'Passphrase'),
+             || show('Vault Key', 'Prepare', 'Lock', 'Password'),
     data:       show('Export Vault', 'Save an encrypted backup of your passwords')
              || show('Import Vault', 'Restore passwords from an encrypted backup')
              || show('App Version', '0.1.0') || show('Stack', 'Electron React C++')
@@ -677,10 +685,8 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       ? 'configure'
       : !syncStatus.loggedIn
         ? 'auth'
-        : !vaultKeyStatus?.hasRemoteEnvelope
-          ? 'init-key'
-          : !vaultKeyStatus?.hasLocalUnlockedKey
-            ? 'unlock-key'
+        : !vaultKeyStatus?.hasRemoteEnvelope || !vaultKeyStatus?.hasLocalUnlockedKey
+          ? 'prepare-key'
             : 'ready';
 
   return (
@@ -962,8 +968,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                 <p className="text-[13px] text-lo">
                   {syncStep === 'configure' && 'Sync is enabled but not configured. Open the wizard to connect your server and account.'}
                   {syncStep === 'auth' && 'Server is configured. Open the wizard to log in or create your synced account.'}
-                  {syncStep === 'init-key' && 'Account is ready. Open the wizard to initialize your shared vault key.'}
-                  {syncStep === 'unlock-key' && 'Vault key exists. Open the wizard to unlock this device.'}
+                  {syncStep === 'prepare-key' && 'Account is logged in. Open the wizard to prepare the vault key with your account password.'}
                   {syncStep === 'ready' && 'This device is fully synced and ready.'}
                 </p>
                 <div className="flex gap-2 flex-wrap">
@@ -1068,9 +1073,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                       />
                       <input
                         type="password"
-                        value={vaultKeyPassphrase}
-                        onChange={(e) => setVaultKeyPassphrase(e.target.value)}
-                        placeholder="Vault Key Passphrase"
+                        value={vaultKeyPassword}
+                        onChange={(e) => setVaultKeyPassword(e.target.value)}
+                        placeholder="Account Password (for vault key)"
                         className="bg-card border border-edge text-hi text-[14px] rounded-lg px-3 py-2 outline-none focus:border-accent-edge"
                       />
                       <div className="flex gap-2 flex-wrap">
@@ -1096,18 +1101,11 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                           {syncAuthBusy ? 'Working...' : 'Login'}
                         </button>
                         <button
-                          onClick={handleInitVaultKey}
+                          onClick={handlePrepareVaultKey}
                           disabled={vaultKeyBusy || !syncStatus?.loggedIn}
                           className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          {vaultKeyBusy ? 'Working...' : 'Init Vault Key'}
-                        </button>
-                        <button
-                          onClick={handleUnlockVaultKey}
-                          disabled={vaultKeyBusy || !syncStatus?.loggedIn}
-                          className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {vaultKeyBusy ? 'Working...' : 'Unlock Vault Key'}
+                          {vaultKeyBusy ? 'Working...' : 'Prepare Vault Key'}
                         </button>
                         <button
                           onClick={handleLockVaultKey}

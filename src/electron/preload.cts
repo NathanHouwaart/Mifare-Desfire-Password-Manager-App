@@ -60,6 +60,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'sync:syncNow':     () => ipcInvoke('sync:syncNow'),
     'sync:getVaultKeyEnvelope': () => ipcInvoke('sync:getVaultKeyEnvelope'),
     'sync:getVaultKeyStatus':   () => ipcInvoke('sync:getVaultKeyStatus'),
+    'sync:prepareVaultKey':     (payload: SyncVaultKeyPasswordDto) => ipcInvoke('sync:prepareVaultKey', payload),
+    // Deprecated compatibility channels
     'sync:initVaultKey':        (payload: SyncVaultKeyPassphraseDto) => ipcInvoke('sync:initVaultKey', payload),
     'sync:unlockVaultKey':      (payload: SyncVaultKeyPassphraseDto) => ipcInvoke('sync:unlockVaultKey', payload),
     'sync:lockVaultKey':        () => ipcInvoke('sync:lockVaultKey'),
