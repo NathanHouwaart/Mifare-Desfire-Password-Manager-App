@@ -18,12 +18,11 @@
     "test:watch": "vitest",
     "preview": "vite preview",
     "transpile:electron": "tsc --project src/electron/tsconfig.json",
-    "dist:mac": "npm run build:icons && npm run transpile:electron && npm run build && electron-builder --mac --arm64",
+    "dist:mac": "npm run transpile:electron && npm run build && electron-builder --mac --arm64",
     "build:host": "npx @yao-pkg/pkg native-host/host.js --target node18-win-x64 --output native-host/host.exe",
     "download:cp210x": "node scripts/download-cp210x.js",
     "dist:win": "npm run download:cp210x && npm run build:host && npm run transpile:electron && npm run build && electron-builder --win --x64",
-    "build:icons": "mkdir -p build/icons && for size in 16 32 48 64 128 256 512; do convert assets/favicon.ico -resize ${size}x${size} build/icons/${size}x${size}.png; done",
-    "dist:linux": "npm run build:icons && npm run transpile:electron && npm run build && electron-builder --linux --x64",
+    "dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "binary": {
@@ -68,7 +67,7 @@
     "vitest": "^4.0.18"
   },
   "build": {
-    "icon": "build/icons",
+    "icon": "assets/favicon.ico",
     "files": [
       "dist-electron/**",
       "dist-react/**",
@@ -89,6 +88,10 @@
         "to": "dist-electron/preload.cjs"
       },
       {
+        "from": "build/Release/myaddon.node",
+        "to": "build/Release/myaddon.node"
+      },
+      {
         "from": "native-host",
         "to": "native-host"
       },
@@ -99,11 +102,26 @@
     ],
     "linux": {
       "target": ["deb"],
-      "category": "Utility"
+      "category": "Utility",
+      "icon": "assets/favicon.png"
+    },
+    "win": {
+      "target": "nsis",
+      "artifactName": "SecurePass-Setup-${version}.exe",
+      "signExts": [],
+      "signAndEditExecutable": false
     },
     "deb": {
       "maintainer": "Nathan Houwaart n.m.houwaart@hva.nl",
       "afterInstall": "packaging/linux/debian/postinst"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SecurePass"
     }
   }
 }

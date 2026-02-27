@@ -28,3 +28,7 @@ build_tests
 *.sw?
 
 .venv/
+
+# Native messaging host build artifacts
+native-host/host.exe
+native-host/host-error.log
