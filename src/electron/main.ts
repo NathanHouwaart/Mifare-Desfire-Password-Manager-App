@@ -32,6 +32,11 @@ let shutdownInProgress = false;
 const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twice from 100%
 const ZOOM_SHORTCUT_KEYS = new Set(['+', '=', '-', '_', '0', 'Add', 'Subtract', 'NumpadAdd', 'NumpadSubtract']);
 
+if (process.platform === 'win32') {
+  // Keep taskbar grouping/icon tied to our explicit app identity.
+  app.setAppUserModelId('com.securepass.app');
+}
+
 /**
  * Tracks the port the C++ binding currently has open.
  * Used to give the renderer a success response when it reconnects after
@@ -258,18 +263,18 @@ app.on('ready', () => {
     sendLogToRenderer(l, message);
   });
 
-  // Resolve window icon path for dev vs packaged app so Windows shows the correct icon
-  const devIcon = path.join(app.getAppPath(), 'assets', 'favicon.ico');
-  const prodIcon = path.join(process.resourcesPath || app.getAppPath(), 'assets', 'favicon.ico');
-
-  const windowIcon = app.isPackaged ? prodIcon : devIcon;
+  const windowIconCandidates = resolveBundledDirCandidates('assets')
+    .map((assetsDir) => path.join(assetsDir, 'favicon.ico'));
+  const windowIcon = windowIconCandidates.find((candidate) => fs.existsSync(candidate));
 
   // Create nativeImage for the window icon if available
   let iconImg: ReturnType<typeof nativeImage.createFromPath> | undefined = undefined;
   try {
-    if (fs.existsSync(windowIcon)) {
+    if (windowIcon) {
       const candidate = nativeImage.createFromPath(windowIcon);
       if (!candidate.isEmpty()) iconImg = candidate;
+    } else {
+      console.warn('Window icon not found. Checked:', windowIconCandidates.join(', '));
     }
   } catch (err) {
     console.warn('Could not load window icon:', err);

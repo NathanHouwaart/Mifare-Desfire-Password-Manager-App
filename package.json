@@ -67,6 +67,8 @@
     "vitest": "^4.0.18"
   },
   "build": {
+    "appId": "com.securepass.app",
+    "afterPack": "scripts/afterPack.js",
     "icon": "assets/favicon.ico",
     "files": [
       "dist-electron/**",
@@ -86,6 +88,14 @@
       {
         "from": "dist-electron/preload.cjs",
         "to": "dist-electron/preload.cjs"
+      },
+      {
+        "from": "assets/favicon.ico",
+        "to": "assets/favicon.ico"
+      },
+      {
+        "from": "assets/favicon.png",
+        "to": "assets/favicon.png"
       },
       {
         "from": "build/Release/myaddon.node",
