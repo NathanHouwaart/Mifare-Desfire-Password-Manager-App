@@ -529,7 +529,13 @@ const PasswordCard = ({
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
-export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) => {
+export const PasswordsPage = ({
+  theme = 'dark',
+  isActive = false,
+}: {
+  theme?: 'dark' | 'light';
+  isActive?: boolean;
+}) => {
   const [entries,        setEntries]        = useState<EntryListItemDto[]>([]);
   const [loading,        setLoading]        = useState(true);
   const [loadError,      setLoadError]      = useState<string | null>(null);
@@ -638,6 +644,19 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     const list = await window.electron['vault:listEntries']();
     setEntries(list);
   }, []);
+
+  // Refresh when this tab becomes active so sync changes from Settings appear.
+  useEffect(() => {
+    if (!isActive) return;
+    void refreshEntries().catch(() => {});
+  }, [isActive, refreshEntries]);
+
+  // Refresh on explicit sync-applied signal from Settings.
+  useEffect(() => {
+    const onSynced = () => { void refreshEntries().catch(() => {}); };
+    window.addEventListener('securepass:vault-sync-applied', onSynced);
+    return () => window.removeEventListener('securepass:vault-sync-applied', onSynced);
+  }, [refreshEntries]);
 
   // ── Reveal toggle ────────────────────────────────────────────────────────
   // Always require a card tap to reveal — even if this entry was previously

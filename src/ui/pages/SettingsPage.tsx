@@ -319,6 +319,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncStatus(status);
       setSyncPassword('');
       syncFeedbackFor('ok', `Account bootstrapped for ${status.username}.`);
+      window.dispatchEvent(new Event('securepass:vault-sync-applied'));
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -338,6 +339,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncStatus(status);
       setSyncPassword('');
       syncFeedbackFor('ok', `Logged in as ${status.username}.`);
+      window.dispatchEvent(new Event('securepass:vault-sync-applied'));
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -355,6 +357,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         'ok',
         `Sync complete. Push ${result.push.sent}/${result.push.applied}, pull ${result.pull.received}/${result.pull.applied}, deleted ${result.pull.deleted}.`
       );
+      window.dispatchEvent(new Event('securepass:vault-sync-applied'));
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {

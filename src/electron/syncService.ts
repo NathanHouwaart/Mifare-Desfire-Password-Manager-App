@@ -10,6 +10,7 @@ import {
   getEntryRow,
   getSyncStateValue,
   listOutbox,
+  seedOutboxFromEntries,
   setSyncStateValue,
   SyncEntryRow,
 } from './vault.js';
@@ -20,6 +21,7 @@ const CURSOR_KEY = 'sync_cursor';
 const LAST_SYNC_AT_KEY = 'sync_last_at';
 const LAST_SYNC_ATTEMPT_AT_KEY = 'sync_last_attempt_at';
 const LAST_SYNC_ERROR_KEY = 'sync_last_error';
+const INITIAL_SEED_DONE_KEY = 'sync_initial_seed_done';
 
 let activeSyncRun: Promise<{ push: SyncPushResult; pull: SyncPullResult }> | null = null;
 
@@ -229,6 +231,15 @@ function clearSyncTelemetry(): void {
   setSyncStateValue(LAST_SYNC_AT_KEY, '');
   setSyncStateValue(LAST_SYNC_ATTEMPT_AT_KEY, '');
   setSyncStateValue(LAST_SYNC_ERROR_KEY, '');
+  setSyncStateValue(INITIAL_SEED_DONE_KEY, '');
+}
+
+function isInitialSeedDone(): boolean {
+  return getSyncStateValue(INITIAL_SEED_DONE_KEY) === '1';
+}
+
+function markInitialSeedDone(): void {
+  setSyncStateValue(INITIAL_SEED_DONE_KEY, '1');
 }
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
@@ -420,7 +431,14 @@ export async function logoutSync(): Promise<SyncStatus> {
 
 export async function pushSync(limit = 500): Promise<SyncPushResult> {
   const config = requireConfig();
-  const outbox = listOutbox(limit);
+  let outbox = listOutbox(limit);
+
+  if (outbox.length === 0 && !isInitialSeedDone()) {
+    seedOutboxFromEntries();
+    markInitialSeedDone();
+    outbox = listOutbox(limit);
+  }
+
   if (outbox.length === 0) {
     return { sent: 0, applied: 0, skipped: 0, cursor: getCursor() };
   }

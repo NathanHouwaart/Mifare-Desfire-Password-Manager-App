@@ -161,7 +161,7 @@ function App() {
             <main className="flex-1 overflow-y-auto min-h-0 relative">
               {/* All pages are always mounted — CSS hidden preserves state on tab switch */}
               <div className={path === '/passwords' ? 'flex flex-col h-full' : 'hidden'}>
-                <PasswordsPage theme={theme} />
+                <PasswordsPage theme={theme} isActive={path === '/passwords'} />
               </div>
               <div className={path === '/generator' ? 'block' : 'hidden'}>
                 <GeneratorPage />

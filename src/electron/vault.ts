@@ -546,6 +546,38 @@ export function listOutbox(limit = 500): OutboxRow[] {
   }));
 }
 
+/**
+ * One-time helper for legacy vaults that predate sync_outbox tracking.
+ * Queues all existing entries as upserts so the first sync can seed the server.
+ */
+export function seedOutboxFromEntries(): number {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, updated_at AS updatedAt
+    FROM entries
+  `).all() as Array<{ id: string; updatedAt: number }>;
+
+  if (rows.length === 0) return 0;
+
+  const tx = db.transaction((items: Array<{ id: string; updatedAt: number }>) => {
+    const stmt = db.prepare(`
+      INSERT INTO sync_outbox (id, updated_at, deleted)
+      VALUES (?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET
+        updated_at = excluded.updated_at,
+        deleted = 0
+      WHERE sync_outbox.updated_at < excluded.updated_at
+         OR sync_outbox.deleted <> 0
+    `);
+    for (const row of items) {
+      stmt.run(row.id, row.updatedAt);
+    }
+  });
+
+  tx(rows);
+  return rows.length;
+}
+
 export function clearOutbox(ids: readonly string[]): void {
   if (ids.length === 0) return;
   const db = getDb();
