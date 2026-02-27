@@ -19,6 +19,7 @@ interface LockScreenProps {
 export const LockScreen = ({ onUnlock }: LockScreenProps) => {
   const [storedHash] = useState(() => localStorage.getItem(PIN_HASH_KEY));
   const isSettingPin = !storedHash;
+  const [syncStatus, setSyncStatus] = useState<SyncStatusDto | null>(null);
 
   const [phase, setPhase] = useState<'enter' | 'confirm'>('enter');
   const [pin, setPin] = useState('');
@@ -32,6 +33,26 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const refreshSyncStatus = async () => {
+      try {
+        const status = await window.electron['sync:getStatus']();
+        setSyncStatus(status);
+      } catch {
+        setSyncStatus(null);
+      }
+    };
+    void refreshSyncStatus();
+
+    const onSyncModeChanged = () => {
+      void refreshSyncStatus();
+    };
+    window.addEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+    return () => {
+      window.removeEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+    };
   }, []);
 
   useEffect(() => {
@@ -121,6 +142,10 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
       ? 'Choose a 6-digit PIN to secure your vault.'
       : 'Enter your PIN again to finish setup.')
     : 'Enter your 6-digit PIN to unlock the vault.';
+
+  const syncCtaLabel = syncStatus?.configured
+    ? (syncStatus.loggedIn ? 'Change Sync Account' : 'Login To Sync')
+    : 'Setup Synced Account';
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-page">
@@ -213,6 +238,19 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
               <div className="mb-3 h-5 text-center">
                 {error && <p className="text-[14px] text-err">{error}</p>}
               </div>
+
+              {!unlocking && (
+                <div className="mb-4 flex justify-center">
+                  <button
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent('securepass:open-sync-wizard', { detail: { mode: 'synced' } }));
+                    }}
+                    className="px-3 py-2 rounded-lg text-[12px] font-medium border text-lo border-edge bg-input hover:opacity-90 transition-all duration-100"
+                  >
+                    {syncCtaLabel}
+                  </button>
+                </div>
+              )}
 
               <div className="mx-auto grid w-full max-w-[260px] grid-cols-3 gap-2.5">
                 {NUMBER_KEYS.map((digit) => (

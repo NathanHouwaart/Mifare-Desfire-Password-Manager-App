@@ -10,10 +10,15 @@ This scaffold adds a sync API and deployment stack without changing your current
 
 ## What is included
 - `sync-server/` Node + TypeScript API
+  - `POST /v1/auth/register`
   - `POST /v1/auth/bootstrap`
   - `POST /v1/auth/login`
   - `POST /v1/auth/refresh`
   - `POST /v1/auth/logout`
+  - `GET /v1/auth/mfa/status`
+  - `POST /v1/auth/mfa/setup`
+  - `POST /v1/auth/mfa/enable`
+  - `POST /v1/auth/mfa/disable`
   - `GET /v1/keys/envelope`
   - `PUT /v1/keys/envelope`
   - `POST /v1/sync/push`
@@ -26,14 +31,30 @@ This scaffold adds a sync API and deployment stack without changing your current
 - `deploy/pi-sync/.env.example`
 
 ## Raspberry Pi + Portainer setup
+Detailed field-by-field setup guide:
+- `deploy/pi-sync/README.md`
+
 1. Copy `deploy/pi-sync/.env.example` to `deploy/pi-sync/.env`.
 2. Fill in strong secrets in `.env`.
 3. In Portainer, deploy stack from `deploy/pi-sync/docker-compose.yml`.
 4. Keep `SYNC_BIND_IP=127.0.0.1` if you use Tailscale/WireGuard on host.
 5. Access API over your VPN IP (not open internet).
 
-## Bootstrap first account
-Call once after deployment:
+## Register first account (v2)
+Use normal registration:
+
+```bash
+curl -X POST http://<pi-vpn-ip>:8787/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username":"nathan",
+    "password":"<strong-api-password>",
+    "deviceName":"desktop-main"
+  }'
+```
+
+## Bootstrap first account (legacy)
+Still available temporarily:
 
 ```bash
 curl -X POST http://<pi-vpn-ip>:8787/v1/auth/bootstrap \
@@ -56,7 +77,8 @@ After bootstrap, the endpoint returns `409` and cannot be reused unless DB is re
 - Main-process sync plumbing is in place (`sync:*` IPC handlers + local sync outbox/cursor tables).
 - Settings page now includes Sync controls for:
   - endpoint/username/device config
-  - bootstrap/login/logout
+  - register/login/logout
+  - MFA setup/enable/disable
   - vault key envelope init/unlock/lock
   - manual `Sync Now`
   - local sync reset

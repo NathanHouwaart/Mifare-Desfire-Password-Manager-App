@@ -155,15 +155,23 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [syncBaseUrl, setSyncBaseUrl] = useState('');
   const [syncUsername, setSyncUsername] = useState('');
   const [syncDeviceName, setSyncDeviceName] = useState('');
+  const [syncMode, setSyncMode] = useState<'local' | 'synced'>(
+    () => (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local'
+  );
   const [syncPassword, setSyncPassword] = useState('');
-  const [syncBootstrapToken, setSyncBootstrapToken] = useState('');
+  const [syncMfaCode, setSyncMfaCode] = useState('');
+  const [syncMfaStatus, setSyncMfaStatus] = useState<SyncMfaStatusDto | null>(null);
+  const [syncMfaSetup, setSyncMfaSetup] = useState<SyncMfaSetupDto | null>(null);
   const [syncFeedback, setSyncFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
   const [syncConfigBusy, setSyncConfigBusy] = useState(false);
   const [syncAuthBusy, setSyncAuthBusy] = useState(false);
+  const [syncMfaBusy, setSyncMfaBusy] = useState(false);
   const [syncNowBusy, setSyncNowBusy] = useState(false);
   const [syncLogoutBusy, setSyncLogoutBusy] = useState(false);
   const [syncClearBusy, setSyncClearBusy] = useState(false);
+  const [syncModeBusy, setSyncModeBusy] = useState(false);
   const [syncHydrated, setSyncHydrated] = useState(false);
+  const [syncAdvancedOpen, setSyncAdvancedOpen] = useState(false);
   const [vaultKeyStatus, setVaultKeyStatus] = useState<SyncVaultKeyStatusDto | null>(null);
   const [vaultKeyPassphrase, setVaultKeyPassphrase] = useState('');
   const [vaultKeyBusy, setVaultKeyBusy] = useState(false);
@@ -258,7 +266,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     window.setTimeout(() => setSyncFeedback(null), timeoutMs);
   };
 
-  const refreshSyncStatus = async (hydrateInputs = false) => {
+  const refreshSyncStatus = async (hydrateInputs = false): Promise<SyncStatusDto | null> => {
     try {
       const status = await window.electron['sync:getStatus']();
       setSyncStatus(status);
@@ -268,9 +276,11 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         setSyncDeviceName(status.deviceName ?? '');
         setSyncHydrated(true);
       }
+      return status;
     } catch (e) {
       setSyncStatus(null);
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+      return null;
     }
   };
 
@@ -283,9 +293,64 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }
   };
 
+  const refreshSyncMfaStatus = async (loggedInOverride?: boolean) => {
+    const loggedIn = loggedInOverride ?? (syncStatus?.loggedIn ?? false);
+    if (!loggedIn) {
+      setSyncMfaStatus(null);
+      return;
+    }
+    try {
+      const status = await window.electron['sync:mfaStatus']();
+      setSyncMfaStatus(status);
+    } catch {
+      setSyncMfaStatus(null);
+    }
+  };
+
   useEffect(() => {
-    void refreshSyncStatus(true);
-    void refreshVaultKeyStatus();
+    const init = async () => {
+      const status = await refreshSyncStatus(true);
+      await refreshVaultKeyStatus();
+      if (status?.loggedIn) {
+        await refreshSyncMfaStatus(true);
+      } else {
+        setSyncMfaSetup(null);
+        setSyncMfaStatus(null);
+      }
+    };
+    void init();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onSyncModeChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ mode?: 'local' | 'synced' }>).detail;
+      const mode = detail?.mode;
+      if (mode !== 'local' && mode !== 'synced') return;
+      setSyncMode(mode);
+      if (mode === 'local') {
+        setSyncStatus(null);
+        setSyncMfaStatus(null);
+        setSyncMfaSetup(null);
+        setVaultKeyStatus(null);
+        setSyncPassword('');
+        setSyncMfaCode('');
+        setVaultKeyPassphrase('');
+      } else {
+        void (async () => {
+          const status = await refreshSyncStatus(true);
+          await refreshVaultKeyStatus();
+          if (status?.loggedIn) {
+            await refreshSyncMfaStatus(true);
+          } else {
+            setSyncMfaStatus(null);
+          }
+        })();
+      }
+    };
+    window.addEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+    return () => {
+      window.removeEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveSyncConfig = async () => {
@@ -305,6 +370,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncBaseUrl(status.baseUrl ?? '');
       setSyncUsername(status.username ?? '');
       setSyncDeviceName(status.deviceName ?? '');
+      setSyncMfaStatus(null);
+      setSyncMfaSetup(null);
+      setSyncMfaCode('');
       syncFeedbackFor('ok', 'Sync config saved.');
       await refreshVaultKeyStatus();
     } catch (e) {
@@ -314,27 +382,25 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }
   };
 
-  const handleSyncBootstrap = async () => {
+  const handleSyncRegister = async () => {
     if (!syncPassword.trim()) {
       syncFeedbackFor('err', 'Sync password is required.');
-      return;
-    }
-    if (!syncBootstrapToken.trim()) {
-      syncFeedbackFor('err', 'Bootstrap token is required.');
       return;
     }
     setSyncAuthBusy(true);
     setSyncFeedback(null);
     try {
-      const status = await window.electron['sync:bootstrap']({
+      const status = await window.electron['sync:register']({
         password: syncPassword,
-        bootstrapToken: syncBootstrapToken.trim(),
       });
       setSyncStatus(status);
       setSyncPassword('');
-      syncFeedbackFor('ok', `Account bootstrapped for ${status.username}.`);
+      setSyncMfaCode('');
+      setSyncMfaSetup(null);
+      syncFeedbackFor('ok', `Account registered for ${status.username}.`);
       window.dispatchEvent(new Event('securepass:vault-sync-applied'));
       await refreshVaultKeyStatus();
+      await refreshSyncMfaStatus(status.loggedIn);
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -350,16 +416,76 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     setSyncAuthBusy(true);
     setSyncFeedback(null);
     try {
-      const status = await window.electron['sync:login']({ password: syncPassword });
+      const status = await window.electron['sync:login']({
+        password: syncPassword,
+        mfaCode: syncMfaCode.trim() || undefined,
+      });
       setSyncStatus(status);
       setSyncPassword('');
+      setSyncMfaCode('');
       syncFeedbackFor('ok', `Logged in as ${status.username}.`);
       window.dispatchEvent(new Event('securepass:vault-sync-applied'));
       await refreshVaultKeyStatus();
+      await refreshSyncMfaStatus(status.loggedIn);
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
       setSyncAuthBusy(false);
+    }
+  };
+
+  const handleSyncMfaSetup = async () => {
+    setSyncMfaBusy(true);
+    setSyncFeedback(null);
+    try {
+      const setup = await window.electron['sync:mfaSetup']();
+      setSyncMfaSetup(setup);
+      syncFeedbackFor('ok', 'MFA setup created. Add it in your authenticator app and verify with Enable.');
+      await refreshSyncMfaStatus(true);
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncMfaBusy(false);
+    }
+  };
+
+  const handleSyncMfaEnable = async () => {
+    if (!syncMfaCode.trim()) {
+      syncFeedbackFor('err', 'Authenticator code is required.');
+      return;
+    }
+    setSyncMfaBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:mfaEnable']({ code: syncMfaCode.trim() });
+      setSyncMfaStatus(status);
+      setSyncMfaCode('');
+      setSyncMfaSetup(null);
+      syncFeedbackFor('ok', 'MFA enabled.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncMfaBusy(false);
+    }
+  };
+
+  const handleSyncMfaDisable = async () => {
+    if (!syncMfaCode.trim()) {
+      syncFeedbackFor('err', 'Authenticator code is required.');
+      return;
+    }
+    setSyncMfaBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:mfaDisable']({ code: syncMfaCode.trim() });
+      setSyncMfaStatus(status);
+      setSyncMfaCode('');
+      setSyncMfaSetup(null);
+      syncFeedbackFor('ok', 'MFA disabled.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncMfaBusy(false);
     }
   };
 
@@ -388,6 +514,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     try {
       const status = await window.electron['sync:logout']();
       setSyncStatus(status);
+      setSyncMfaStatus(null);
+      setSyncMfaSetup(null);
+      setSyncMfaCode('');
       syncFeedbackFor('ok', 'Sync session logged out.');
       await refreshVaultKeyStatus();
     } catch (e) {
@@ -408,7 +537,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncUsername('');
       setSyncDeviceName('');
       setSyncPassword('');
-      setSyncBootstrapToken('');
+      setSyncMfaCode('');
+      setSyncMfaStatus(null);
+      setSyncMfaSetup(null);
       syncFeedbackFor('ok', 'Sync config and session removed.');
       setVaultKeyPassphrase('');
       await refreshVaultKeyStatus();
@@ -417,6 +548,43 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     } finally {
       setSyncClearBusy(false);
     }
+  };
+
+  const handleSyncModeChange = async (next: 'local' | 'synced') => {
+    if (next === syncMode) return;
+    if (next === 'synced') {
+      window.dispatchEvent(new CustomEvent('securepass:open-sync-wizard', { detail: { mode: 'synced' } }));
+      syncFeedbackFor('ok', 'Opening sync setup wizard...');
+      return;
+    }
+    setSyncModeBusy(true);
+    setSyncFeedback(null);
+    try {
+      if (syncStatus?.configured || syncStatus?.loggedIn) {
+        await window.electron['sync:clearConfig']();
+        setSyncStatus(null);
+        setSyncBaseUrl('');
+        setSyncUsername('');
+        setSyncDeviceName('');
+      }
+      setSyncMfaCode('');
+      setSyncMfaStatus(null);
+      setSyncMfaSetup(null);
+      setVaultKeyPassphrase('');
+      setVaultKeyStatus(null);
+      setSyncMode(next);
+      localStorage.setItem('setting-sync-mode', next);
+      window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode: next } }));
+      syncFeedbackFor('ok', 'Switched to local-only mode.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncModeBusy(false);
+    }
+  };
+
+  const handleOpenSyncWizard = () => {
+    window.dispatchEvent(new CustomEvent('securepass:open-sync-wizard', { detail: { mode: 'synced' } }));
   };
 
   const handleInitVaultKey = async () => {
@@ -489,8 +657,8 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Connection Timeout', 'Abort the connection attempt after this duration')
              || show('Retry Attempts', 'Number of times to retry a failed connection'),
     sync:       show('Sync Status', 'Background sync every 2 minutes when logged in')
-             || show('Sync URL', 'Username', 'Device Name')
-             || show('Save Config', 'Bootstrap', 'Login', 'Sync Now', 'Logout', 'Reset Sync')
+             || show('Sync URL', 'Username', 'Device Name', 'Local', 'Synced', 'Advanced')
+             || show('Save Config', 'Register', 'Login', 'MFA', 'Authenticator', 'Sync Now', 'Logout', 'Reset Sync')
              || show('Vault Key', 'Initialize', 'Unlock', 'Lock', 'Passphrase'),
     data:       show('Export Vault', 'Save an encrypted backup of your passwords')
              || show('Import Vault', 'Restore passwords from an encrypted backup')
@@ -503,6 +671,17 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const noResults = q.length > 0 && !Object.values(showSec).some(Boolean);
   const formatSyncTime = (timestamp?: number) =>
     timestamp ? new Date(timestamp).toLocaleString() : 'Never';
+  const syncStep = syncMode === 'local'
+    ? 'local'
+    : !syncStatus?.configured
+      ? 'configure'
+      : !syncStatus.loggedIn
+        ? 'auth'
+        : !vaultKeyStatus?.hasRemoteEnvelope
+          ? 'init-key'
+          : !vaultKeyStatus?.hasLocalUnlockedKey
+            ? 'unlock-key'
+            : 'ready';
 
   return (
     <div className="px-6 py-6 max-w-2xl w-full mx-auto">
@@ -744,181 +923,56 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         {/* Sync */}
         {showSec.sync && (
           <Section title="Sync" icon={Cloud}>
-            {show('Sync Status', 'Background sync every 2 minutes when logged in') && (
-              <div className="px-5 py-4 flex flex-col gap-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
-                    syncStatus?.configured
+            <div className="px-5 py-4 flex flex-col gap-3">
+              <p className="text-[16px] font-medium text-hi">Mode</p>
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => void handleSyncModeChange('local')}
+                  disabled={syncModeBusy}
+                  className={`px-4 py-2.5 rounded-xl text-[15px] font-medium border transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    syncMode === 'local'
                       ? 'text-ok border-ok-edge bg-ok-soft'
-                      : 'text-dim border-edge bg-input'
-                  }`}>
-                    {syncStatus?.configured ? 'Configured' : 'Not Configured'}
-                  </span>
-                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
-                    syncStatus?.loggedIn
-                      ? 'text-ok border-ok-edge bg-ok-soft'
-                      : 'text-dim border-edge bg-input'
-                  }`}>
-                    {syncStatus?.loggedIn ? 'Logged In' : 'Logged Out'}
-                  </span>
-                  <span className="text-[12px] px-2 py-1 rounded-lg border text-dim border-edge bg-input">
-                    Cursor: {syncStatus?.cursor ?? 0}
-                  </span>
-                </div>
-                <p className="text-[13px] text-lo">
-                  Background sync runs every 2 minutes while logged in.
-                </p>
-                <p className="text-[13px] text-lo">
-                  Last successful sync: {formatSyncTime(syncStatus?.lastSyncAt)}
-                </p>
-                <p className="text-[13px] text-lo">
-                  Last sync attempt: {formatSyncTime(syncStatus?.lastSyncAttemptAt)}
-                </p>
-                {syncStatus?.lastSyncError && (
-                  <p className="text-[13px] text-err">
-                    Last sync error: {syncStatus.lastSyncError}
-                  </p>
-                )}
+                      : 'text-lo border-edge bg-input hover:opacity-90'
+                  }`}
+                >
+                  Use Locally
+                </button>
+                <button
+                  onClick={() => void handleSyncModeChange('synced')}
+                  disabled={syncModeBusy}
+                  className={`px-4 py-2.5 rounded-xl text-[15px] font-medium border transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed ${
+                    syncMode === 'synced'
+                      ? 'text-accent border-accent-edge bg-accent-soft'
+                      : 'text-lo border-edge bg-input hover:opacity-90'
+                  }`}
+                >
+                  Use Synced
+                </button>
               </div>
-            )}
+              <p className="text-[13px] text-lo">
+                {syncMode === 'local'
+                  ? 'Local mode stores everything on this device only.'
+                  : 'Synced mode shares encrypted vault data across your devices.'}
+              </p>
+            </div>
 
-            {show('Sync URL', 'Username', 'Device Name', 'Save Config') && (
+            {syncMode === 'synced' && (
               <div className="px-5 py-4 flex flex-col gap-3">
-                <p className="text-[16px] font-medium text-hi">Sync Configuration</p>
-                <div className="grid grid-cols-1 gap-2.5">
-                  <input
-                    type="text"
-                    value={syncBaseUrl}
-                    onChange={(e) => setSyncBaseUrl(e.target.value)}
-                    placeholder="Sync URL (for example: https://100.x.x.x:8787)"
-                    className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
-                  />
-                  <input
-                    type="text"
-                    value={syncUsername}
-                    onChange={(e) => setSyncUsername(e.target.value)}
-                    placeholder="Username"
-                    className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
-                  />
-                  <input
-                    type="text"
-                    value={syncDeviceName}
-                    onChange={(e) => setSyncDeviceName(e.target.value)}
-                    placeholder="Device Name (optional)"
-                    className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
-                  />
-                </div>
-                <div className="flex justify-end">
-                  <button
-                    onClick={handleSaveSyncConfig}
-                    disabled={syncConfigBusy}
-                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {syncConfigBusy ? 'Saving...' : 'Save Config'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {show('Bootstrap', 'Login') && (
-              <div className="px-5 py-4 flex flex-col gap-3">
-                <p className="text-[16px] font-medium text-hi">Authentication</p>
-                <input
-                  type="password"
-                  value={syncPassword}
-                  onChange={(e) => setSyncPassword(e.target.value)}
-                  placeholder="Sync Password"
-                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
-                />
-                <input
-                  type="password"
-                  value={syncBootstrapToken}
-                  onChange={(e) => setSyncBootstrapToken(e.target.value)}
-                  placeholder="Bootstrap Token (first setup only)"
-                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
-                />
+                <p className="text-[16px] font-medium text-hi">Guided Setup</p>
+                <p className="text-[13px] text-lo">
+                  {syncStep === 'configure' && 'Sync is enabled but not configured. Open the wizard to connect your server and account.'}
+                  {syncStep === 'auth' && 'Server is configured. Open the wizard to log in or create your synced account.'}
+                  {syncStep === 'init-key' && 'Account is ready. Open the wizard to initialize your shared vault key.'}
+                  {syncStep === 'unlock-key' && 'Vault key exists. Open the wizard to unlock this device.'}
+                  {syncStep === 'ready' && 'This device is fully synced and ready.'}
+                </p>
                 <div className="flex gap-2 flex-wrap">
                   <button
-                    onClick={handleSyncBootstrap}
-                    disabled={syncAuthBusy}
-                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={handleOpenSyncWizard}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100"
                   >
-                    {syncAuthBusy ? 'Working...' : 'Bootstrap'}
+                    Open Sync Wizard
                   </button>
-                  <button
-                    onClick={handleSyncLogin}
-                    disabled={syncAuthBusy}
-                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {syncAuthBusy ? 'Working...' : 'Login'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {show('Vault Key', 'Initialize', 'Unlock', 'Lock', 'Passphrase') && (
-              <div className="px-5 py-4 flex flex-col gap-3">
-                <p className="text-[16px] font-medium text-hi">Vault Key (Phase 1)</p>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
-                    vaultKeyStatus?.hasRemoteEnvelope
-                      ? 'text-ok border-ok-edge bg-ok-soft'
-                      : 'text-dim border-edge bg-input'
-                  }`}>
-                    {vaultKeyStatus?.hasRemoteEnvelope ? 'Envelope On Server' : 'No Envelope'}
-                  </span>
-                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
-                    vaultKeyStatus?.hasLocalUnlockedKey
-                      ? 'text-ok border-ok-edge bg-ok-soft'
-                      : 'text-dim border-edge bg-input'
-                  }`}>
-                    {vaultKeyStatus?.hasLocalUnlockedKey ? 'Locally Unlocked' : 'Locally Locked'}
-                  </span>
-                  {vaultKeyStatus?.keyVersion && (
-                    <span className="text-[12px] px-2 py-1 rounded-lg border text-dim border-edge bg-input">
-                      Key v{vaultKeyStatus.keyVersion}
-                    </span>
-                  )}
-                </div>
-                <p className="text-[13px] text-lo">
-                  Local unlock time: {formatSyncTime(vaultKeyStatus?.unlockedAt)}
-                </p>
-                <input
-                  type="password"
-                  value={vaultKeyPassphrase}
-                  onChange={(e) => setVaultKeyPassphrase(e.target.value)}
-                  placeholder="Vault Key Passphrase"
-                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
-                />
-                <div className="flex gap-2 flex-wrap">
-                  <button
-                    onClick={handleInitVaultKey}
-                    disabled={vaultKeyBusy || !syncStatus?.loggedIn}
-                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {vaultKeyBusy ? 'Working...' : 'Initialize'}
-                  </button>
-                  <button
-                    onClick={handleUnlockVaultKey}
-                    disabled={vaultKeyBusy || !syncStatus?.loggedIn}
-                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {vaultKeyBusy ? 'Working...' : 'Unlock'}
-                  </button>
-                  <button
-                    onClick={handleLockVaultKey}
-                    disabled={vaultKeyBusy}
-                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {vaultKeyBusy ? 'Working...' : 'Lock'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {show('Sync Now', 'Logout', 'Reset Sync') && (
-              <div className="px-5 py-4 flex flex-col gap-2.5">
-                <div className="flex gap-2 flex-wrap">
                   <button
                     onClick={handleSyncNow}
                     disabled={syncNowBusy || !syncStatus?.configured || !syncStatus?.loggedIn}
@@ -934,19 +988,212 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                   >
                     {syncLogoutBusy ? 'Logging out...' : 'Logout'}
                   </button>
-                  <button
-                    onClick={handleSyncClearConfig}
-                    disabled={syncClearBusy}
-                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-err border-err-edge bg-err-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {syncClearBusy ? 'Resetting...' : 'Reset Sync'}
-                  </button>
                 </div>
-                {syncFeedback && (
-                  <p className={`text-[13px] ${syncFeedback.type === 'ok' ? 'text-ok' : 'text-err'}`}>
-                    {syncFeedback.message}
-                  </p>
+              </div>
+            )}
+
+            {syncMode === 'synced' && (
+              <div className="px-5 py-4 flex flex-col gap-3">
+                <button
+                  onClick={() => setSyncAdvancedOpen((v) => !v)}
+                  className="self-start px-3 py-2 rounded-lg text-[13px] font-medium border text-lo border-edge bg-input hover:opacity-90 transition-all duration-100"
+                >
+                  {syncAdvancedOpen ? 'Hide Advanced' : 'Show Advanced'}
+                </button>
+
+                {syncAdvancedOpen && (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                        syncStatus?.configured
+                          ? 'text-ok border-ok-edge bg-ok-soft'
+                          : 'text-dim border-edge bg-input'
+                      }`}>
+                        {syncStatus?.configured ? 'Configured' : 'Not Configured'}
+                      </span>
+                      <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                        syncStatus?.loggedIn
+                          ? 'text-ok border-ok-edge bg-ok-soft'
+                          : 'text-dim border-edge bg-input'
+                      }`}>
+                        {syncStatus?.loggedIn ? 'Logged In' : 'Logged Out'}
+                      </span>
+                      <span className="text-[12px] px-2 py-1 rounded-lg border text-dim border-edge bg-input">
+                        Cursor: {syncStatus?.cursor ?? 0}
+                      </span>
+                    </div>
+                    <p className="text-[13px] text-lo">Last successful sync: {formatSyncTime(syncStatus?.lastSyncAt)}</p>
+                    <p className="text-[13px] text-lo">Last sync attempt: {formatSyncTime(syncStatus?.lastSyncAttemptAt)}</p>
+                    {syncStatus?.lastSyncError && (
+                      <p className="text-[13px] text-err">Last sync error: {syncStatus.lastSyncError}</p>
+                    )}
+
+                    <div className="flex flex-col gap-2 rounded-xl border border-edge bg-input p-3">
+                      <p className="text-[13px] font-medium text-hi">Advanced Account Controls</p>
+                      <input
+                        type="text"
+                        value={syncBaseUrl}
+                        onChange={(e) => setSyncBaseUrl(e.target.value)}
+                        placeholder="Sync URL"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-lg px-3 py-2 outline-none focus:border-accent-edge"
+                      />
+                      <input
+                        type="text"
+                        value={syncUsername}
+                        onChange={(e) => setSyncUsername(e.target.value)}
+                        placeholder="Username"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-lg px-3 py-2 outline-none focus:border-accent-edge"
+                      />
+                      <input
+                        type="text"
+                        value={syncDeviceName}
+                        onChange={(e) => setSyncDeviceName(e.target.value)}
+                        placeholder="Device Name (optional)"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-lg px-3 py-2 outline-none focus:border-accent-edge"
+                      />
+                      <input
+                        type="password"
+                        value={syncPassword}
+                        onChange={(e) => setSyncPassword(e.target.value)}
+                        placeholder="Sync Password"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-lg px-3 py-2 outline-none focus:border-accent-edge"
+                      />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={syncMfaCode}
+                        onChange={(e) => setSyncMfaCode(e.target.value)}
+                        placeholder="Authenticator Code"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-lg px-3 py-2 outline-none focus:border-accent-edge"
+                      />
+                      <input
+                        type="password"
+                        value={vaultKeyPassphrase}
+                        onChange={(e) => setVaultKeyPassphrase(e.target.value)}
+                        placeholder="Vault Key Passphrase"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-lg px-3 py-2 outline-none focus:border-accent-edge"
+                      />
+                      <div className="flex gap-2 flex-wrap">
+                        <button
+                          onClick={handleSaveSyncConfig}
+                          disabled={syncConfigBusy}
+                          className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {syncConfigBusy ? 'Saving...' : 'Save Config'}
+                        </button>
+                        <button
+                          onClick={handleSyncRegister}
+                          disabled={syncAuthBusy}
+                          className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {syncAuthBusy ? 'Working...' : 'Register'}
+                        </button>
+                        <button
+                          onClick={handleSyncLogin}
+                          disabled={syncAuthBusy}
+                          className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {syncAuthBusy ? 'Working...' : 'Login'}
+                        </button>
+                        <button
+                          onClick={handleInitVaultKey}
+                          disabled={vaultKeyBusy || !syncStatus?.loggedIn}
+                          className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {vaultKeyBusy ? 'Working...' : 'Init Vault Key'}
+                        </button>
+                        <button
+                          onClick={handleUnlockVaultKey}
+                          disabled={vaultKeyBusy || !syncStatus?.loggedIn}
+                          className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {vaultKeyBusy ? 'Working...' : 'Unlock Vault Key'}
+                        </button>
+                        <button
+                          onClick={handleLockVaultKey}
+                          disabled={vaultKeyBusy}
+                          className="px-3 py-2 rounded-lg text-[13px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {vaultKeyBusy ? 'Working...' : 'Lock Vault Key'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                        syncMfaStatus?.mfaEnabled
+                          ? 'text-ok border-ok-edge bg-ok-soft'
+                          : 'text-dim border-edge bg-input'
+                      }`}>
+                        {syncMfaStatus?.mfaEnabled ? 'MFA Enabled' : 'MFA Disabled'}
+                      </span>
+                      <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                        syncMfaStatus?.pendingEnrollment
+                          ? 'text-accent border-accent-edge bg-accent-soft'
+                          : 'text-dim border-edge bg-input'
+                      }`}>
+                        {syncMfaStatus?.pendingEnrollment ? 'MFA Setup Pending' : 'No Pending MFA Setup'}
+                      </span>
+                    </div>
+
+                    {syncMfaSetup && (
+                      <div className="text-[13px] text-lo bg-input border border-edge rounded-xl p-3 space-y-1">
+                        <p>Issuer: <span className="text-hi">{syncMfaSetup.issuer}</span></p>
+                        <p>Account: <span className="text-hi">{syncMfaSetup.accountName}</span></p>
+                        <p>Secret: <span className="text-hi break-all">{syncMfaSetup.secret}</span></p>
+                        <p className="break-all">OTP URL: <span className="text-hi">{syncMfaSetup.otpauthUrl}</span></p>
+                      </div>
+                    )}
+
+                    <div className="flex gap-2 flex-wrap">
+                      <button
+                        onClick={handleSyncMfaSetup}
+                        disabled={syncMfaBusy || !syncStatus?.loggedIn}
+                        className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {syncMfaBusy ? 'Working...' : 'Setup MFA'}
+                      </button>
+                      <button
+                        onClick={handleSyncMfaEnable}
+                        disabled={syncMfaBusy || !syncStatus?.loggedIn}
+                        className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {syncMfaBusy ? 'Working...' : 'Enable MFA'}
+                      </button>
+                      <button
+                        onClick={handleSyncMfaDisable}
+                        disabled={syncMfaBusy || !syncStatus?.loggedIn}
+                        className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-err border-err-edge bg-err-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {syncMfaBusy ? 'Working...' : 'Disable MFA'}
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={handleSyncClearConfig}
+                      disabled={syncClearBusy}
+                      className="self-start px-4 py-2.5 rounded-xl text-[15px] font-medium border text-err border-err-edge bg-err-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {syncClearBusy ? 'Resetting...' : 'Reset Sync'}
+                    </button>
+                  </div>
                 )}
+              </div>
+            )}
+
+            {syncMode === 'local' && (
+              <div className="px-5 py-4">
+                <p className="text-[14px] text-lo">
+                  Sync is disabled. Your vault stays on this device only.
+                </p>
+              </div>
+            )}
+
+            {syncFeedback && (
+              <div className="px-5 py-4">
+                <p className={`text-[13px] ${syncFeedback.type === 'ok' ? 'text-ok' : 'text-err'}`}>
+                  {syncFeedback.message}
+                </p>
               </div>
             )}
           </Section>

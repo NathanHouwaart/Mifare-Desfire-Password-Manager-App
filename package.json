@@ -33,10 +33,12 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/qrcode": "^1.5.6",
     "better-sqlite3": "^12.6.2",
     "cmake-js": "^7.3.1",
     "lucide-react": "^0.575.0",
     "node-addon-api": "^8.5.0",
+    "qrcode": "^1.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.9.4",
@@ -111,7 +113,9 @@
       }
     ],
     "linux": {
-      "target": ["deb"],
+      "target": [
+        "deb"
+      ],
       "category": "Utility",
       "icon": "assets/favicon.png"
     },

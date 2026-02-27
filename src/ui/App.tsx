@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Components/Sidebar';
 import { LockScreen } from './Components/LockScreen';
 import { SplashScreen } from './Components/SplashScreen';
+import { OnboardingScreen } from './Components/OnboardingScreen';
 import { LockTransition } from './Components/LockTransition';
 import { DebugTerminal } from './Components/DebugTerminal';
 import { PasswordsPage } from './pages/PasswordsPage';
@@ -22,6 +23,11 @@ function App() {
   const [locking,          setLocking]           = useState(false);
   const [appVisible,       setAppVisible]        = useState(false);
   const [showSplash,       setShowSplash]        = useState(true);
+  const [needsOnboarding,  setNeedsOnboarding]   = useState(
+    () => localStorage.getItem('app-onboarding-complete') !== '1'
+  );
+  const [onboardingInitialMode, setOnboardingInitialMode] = useState<'local' | 'synced' | null>(null);
+  const [showSyncModal,    setShowSyncModal]     = useState(false);
   const [isTerminalOpen,   setIsTerminalOpen]    = useState(false);
   const [isNfcConnected,   setIsNfcConnected]    = useState(false);
   const [terminalEnabled,  setTerminalEnabled]   = useState(
@@ -67,6 +73,20 @@ function App() {
       window.removeEventListener('focus', onFocus);
     };
   }, [unlocked]);
+
+  useEffect(() => {
+    const onOpenSyncWizard = (event: Event) => {
+      const detail = (event as CustomEvent<{ mode?: 'local' | 'synced' }>).detail;
+      const mode = detail?.mode === 'local' || detail?.mode === 'synced' ? detail.mode : null;
+      setOnboardingInitialMode(mode);
+      setShowSyncModal(true);
+    };
+
+    window.addEventListener('securepass:open-sync-wizard', onOpenSyncWizard);
+    return () => {
+      window.removeEventListener('securepass:open-sync-wizard', onOpenSyncWizard);
+    };
+  }, []);
 
   // ── Auto-lock on inactivity ──────────────────────────────────────────────
   // Reads the current value from localStorage each time the vault is unlocked
@@ -137,6 +157,23 @@ function App() {
     );
   }
 
+  if (needsOnboarding) {
+    // True first-run: full-screen wizard, no way to cancel
+    return (
+      <div className={`h-screen w-screen bg-page ${themeClass}`}>
+        <OnboardingScreen
+          initialMode={null}
+          onComplete={(mode) => {
+            localStorage.setItem('app-onboarding-complete', '1');
+            localStorage.setItem('setting-sync-mode', mode);
+            window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode } }));
+            setNeedsOnboarding(false);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className={`h-screen w-screen overflow-hidden bg-page ${themeClass}`}>
 
@@ -154,6 +191,7 @@ function App() {
           <Sidebar
             onLock={() => setLocking(true)}
             isNfcConnected={isNfcConnected}
+            onOpenSync={() => setShowSyncModal(true)}
           />
 
           {/* flex-col wrapper so the terminal sits in flow — main shrinks as terminal grows */}
@@ -195,6 +233,26 @@ function App() {
               <DebugTerminal isOpen={isTerminalOpen} onOpenChange={setIsTerminalOpen} />
             )}
           </div>
+        </div>
+      )}
+
+      {/* Sync setup modal — accessible from the sidebar Cloud button */}
+      {showSyncModal && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowSyncModal(false); }}
+        >
+          <OnboardingScreen
+            asModal
+            initialMode={onboardingInitialMode}
+            onCancel={() => { setShowSyncModal(false); setOnboardingInitialMode(null); }}
+            onComplete={(mode) => {
+              localStorage.setItem('setting-sync-mode', mode);
+              window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode } }));
+              setShowSyncModal(false);
+              setOnboardingInitialMode(null);
+            }}
+          />
         </div>
       )}
 

@@ -103,8 +103,29 @@ type SyncBootstrapDto = {
   bootstrapToken: string;
 };
 
+type SyncRegisterDto = {
+  password: string;
+};
+
 type SyncLoginDto = {
   password: string;
+  mfaCode?: string;
+};
+
+type SyncMfaCodeDto = {
+  code: string;
+};
+
+type SyncMfaStatusDto = {
+  mfaEnabled: boolean;
+  pendingEnrollment: boolean;
+};
+
+type SyncMfaSetupDto = {
+  issuer: string;
+  accountName: string;
+  secret: string;
+  otpauthUrl: string;
 };
 
 type SyncVaultKeyPassphraseDto = {
@@ -238,10 +259,20 @@ type IPCHandlers = {
   'sync:setConfig': (config: SyncConfigDto) => Promise<SyncStatusDto>;
   /** Removes local sync config and session data. */
   'sync:clearConfig': () => Promise<SyncStatusDto>;
-  /** One-time account bootstrap against a fresh server. */
+  /** Legacy one-time account bootstrap against a fresh server. */
   'sync:bootstrap': (payload: SyncBootstrapDto) => Promise<SyncStatusDto>;
+  /** Register a new account on the sync server. */
+  'sync:register': (payload: SyncRegisterDto) => Promise<SyncStatusDto>;
   /** Login to sync server and store encrypted refresh/access session. */
   'sync:login': (payload: SyncLoginDto) => Promise<SyncStatusDto>;
+  /** Returns current MFA enrollment status for the authenticated account. */
+  'sync:mfaStatus': () => Promise<SyncMfaStatusDto>;
+  /** Starts MFA setup and returns secret + otpauth URL for authenticator apps. */
+  'sync:mfaSetup': () => Promise<SyncMfaSetupDto>;
+  /** Completes MFA setup by verifying a current authenticator code. */
+  'sync:mfaEnable': (payload: SyncMfaCodeDto) => Promise<SyncMfaStatusDto>;
+  /** Disables MFA after verifying a current authenticator code. */
+  'sync:mfaDisable': (payload: SyncMfaCodeDto) => Promise<SyncMfaStatusDto>;
   /** Logout and clear local session state. */
   'sync:logout': () => Promise<SyncStatusDto>;
   /** Pushes locally queued encrypted changes. */

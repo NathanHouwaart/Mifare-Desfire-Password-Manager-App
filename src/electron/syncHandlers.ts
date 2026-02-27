@@ -3,14 +3,19 @@
 import {
   bootstrapSync,
   clearSyncConfigAndSession,
+  disableSyncMfa,
+  enableSyncMfa,
   getSyncStatus,
   getSyncKeyEnvelope,
+  getSyncMfaStatus,
   loginSync,
+  registerSync,
   logoutSync,
   pullSync,
   pushSync,
   runFullSync,
   setSyncKeyEnvelope,
+  setupSyncMfa,
   setSyncConfig,
 } from './syncService.js';
 import {
@@ -78,8 +83,25 @@ export function registerSyncHandlers(
     return status;
   });
 
+  ipcMain.handle('sync:register', async (_ev, payload: SyncRegisterDto) => {
+    const status = await registerSync(payload.password);
+    log('info', `sync:register - account created for ${status.username}`);
+    try {
+      const result = await runFullSync();
+      log(
+        'info',
+        `sync:register sync - push(sent=${result.push.sent}, applied=${result.push.applied})` +
+          ` pull(received=${result.pull.received}, applied=${result.pull.applied}, deleted=${result.pull.deleted})`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log('warn', `sync:register post-sync failed - ${msg}`);
+    }
+    return status;
+  });
+
   ipcMain.handle('sync:login', async (_ev, payload: SyncLoginDto) => {
-    const status = await loginSync(payload.password);
+    const status = await loginSync(payload.password, payload.mfaCode);
     log('info', `sync:login - authenticated as ${status.username}`);
     try {
       const result = await runFullSync();
@@ -92,6 +114,28 @@ export function registerSyncHandlers(
       const msg = err instanceof Error ? err.message : String(err);
       log('warn', `sync:login post-sync failed - ${msg}`);
     }
+    return status;
+  });
+
+  ipcMain.handle('sync:mfaStatus', async () => {
+    return getSyncMfaStatus();
+  });
+
+  ipcMain.handle('sync:mfaSetup', async () => {
+    const setup = await setupSyncMfa();
+    log('info', 'sync:mfaSetup - pending TOTP enrollment generated');
+    return setup;
+  });
+
+  ipcMain.handle('sync:mfaEnable', async (_ev, payload: SyncMfaCodeDto) => {
+    const status = await enableSyncMfa(payload.code);
+    log('info', 'sync:mfaEnable - MFA enabled');
+    return status;
+  });
+
+  ipcMain.handle('sync:mfaDisable', async (_ev, payload: SyncMfaCodeDto) => {
+    const status = await disableSyncMfa(payload.code);
+    log('warn', 'sync:mfaDisable - MFA disabled');
     return status;
   });
 

@@ -76,6 +76,25 @@ interface TokenResponse {
   accessToken: string;
   refreshToken: string;
   refreshExpiresAt: string;
+  username?: string;
+  mfaEnabled?: boolean;
+}
+
+interface SyncLoginErrorResponse {
+  error?: string;
+  mfaRequired?: boolean;
+}
+
+interface SyncMfaStatusResponse {
+  mfaEnabled: boolean;
+  pendingEnrollment: boolean;
+}
+
+interface SyncMfaSetupResponse {
+  issuer: string;
+  accountName: string;
+  secret: string;
+  otpauthUrl: string;
 }
 
 export interface SyncStatus {
@@ -119,6 +138,18 @@ export interface SyncKeyEnvelope {
   ciphertext: string;
   authTag: string;
   updatedAt?: string;
+}
+
+export interface SyncMfaStatus {
+  mfaEnabled: boolean;
+  pendingEnrollment: boolean;
+}
+
+export interface SyncMfaSetup {
+  issuer: string;
+  accountName: string;
+  secret: string;
+  otpauthUrl: string;
 }
 
 function configPath(): string {
@@ -206,6 +237,16 @@ function clearSession(): void {
   if (fs.existsSync(file)) fs.unlinkSync(file);
 }
 
+function writeSessionFromToken(payload: TokenResponse): void {
+  writeSession({
+    userId: payload.userId,
+    deviceId: payload.deviceId,
+    accessToken: payload.accessToken,
+    refreshToken: payload.refreshToken,
+    refreshExpiresAt: payload.refreshExpiresAt,
+  });
+}
+
 function getCursor(): number {
   const value = getSyncStateValue(CURSOR_KEY);
   if (!value) return 0;
@@ -281,6 +322,10 @@ async function throwApiError(response: Response): Promise<never> {
   throw new Error(`Sync API ${response.status}: ${details}`);
 }
 
+function isRouteNotFoundError(message: string): boolean {
+  return /sync api 404:\s*not found/i.test(message);
+}
+
 async function requestRaw(
   config: SyncConfig,
   inputPath: string,
@@ -341,6 +386,34 @@ async function requestAuthedJson<T>(
   return parseJsonResponse<T>(response);
 }
 
+async function requestAuthedJsonWithRouteFallback<T>(
+  config: SyncConfig,
+  primaryPath: string,
+  fallbackPath: string,
+  init: RequestInit = {}
+): Promise<T> {
+  try {
+    return await requestAuthedJson<T>(config, primaryPath, init);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isRouteNotFoundError(message)) {
+      throw error;
+    }
+  }
+
+  try {
+    return await requestAuthedJson<T>(config, fallbackPath, init);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isRouteNotFoundError(message)) {
+      throw new Error(
+        'Sync API 404: MFA endpoints not found on server. Update/rebuild the sync server and restart it.'
+      );
+    }
+    throw error;
+  }
+}
+
 function requireConfig(): SyncConfig {
   const config = readConfig();
   if (!config) throw new Error('Sync config missing. Call sync:setConfig first.');
@@ -398,19 +471,13 @@ export async function bootstrapSync(password: string, bootstrapToken: string): P
   });
   if (!response.ok) throw await throwApiError(response);
   const payload = await parseJsonResponse<TokenResponse>(response);
-  writeSession({
-    userId: payload.userId,
-    deviceId: payload.deviceId,
-    accessToken: payload.accessToken,
-    refreshToken: payload.refreshToken,
-    refreshExpiresAt: payload.refreshExpiresAt,
-  });
+  writeSessionFromToken(payload);
   return makeStatus(config, readSession());
 }
 
-export async function loginSync(password: string): Promise<SyncStatus> {
+export async function registerSync(password: string): Promise<SyncStatus> {
   const config = requireConfig();
-  const response = await requestRaw(config, '/v1/auth/login', {
+  const response = await requestRaw(config, '/v1/auth/register', {
     method: 'POST',
     body: JSON.stringify({
       username: config.username,
@@ -420,14 +487,104 @@ export async function loginSync(password: string): Promise<SyncStatus> {
   });
   if (!response.ok) throw await throwApiError(response);
   const payload = await parseJsonResponse<TokenResponse>(response);
-  writeSession({
-    userId: payload.userId,
-    deviceId: payload.deviceId,
-    accessToken: payload.accessToken,
-    refreshToken: payload.refreshToken,
-    refreshExpiresAt: payload.refreshExpiresAt,
-  });
+  writeSessionFromToken(payload);
   return makeStatus(config, readSession());
+}
+
+export async function loginSync(password: string, mfaCode?: string): Promise<SyncStatus> {
+  const config = requireConfig();
+  const requestBody: {
+    username: string;
+    password: string;
+    deviceName: string;
+    mfaCode?: string;
+  } = {
+    username: config.username,
+    password,
+    deviceName: config.deviceName,
+  };
+  if (mfaCode && mfaCode.trim().length > 0) {
+    requestBody.mfaCode = mfaCode.trim();
+  }
+
+  const response = await requestRaw(config, '/v1/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  if (!response.ok) {
+    if (response.status === 401) {
+      let details: SyncLoginErrorResponse | null = null;
+      try {
+        details = await parseJsonResponse<SyncLoginErrorResponse>(response);
+      } catch {
+        // Fall through to generic API error handling below.
+      }
+      if (details?.mfaRequired || details?.error === 'MFA_REQUIRED') {
+        throw Object.assign(new Error('MFA code required for login.'), {
+          code: 'MFA_REQUIRED',
+        });
+      }
+      if (details?.error === 'INVALID_MFA_CODE') {
+        throw Object.assign(new Error('Invalid MFA code.'), {
+          code: 'INVALID_MFA_CODE',
+        });
+      }
+      if (details?.error && details.error.length > 0) {
+        throw new Error(`Sync API ${response.status}: ${details.error}`);
+      }
+    }
+    throw await throwApiError(response);
+  }
+  const payload = await parseJsonResponse<TokenResponse>(response);
+  writeSessionFromToken(payload);
+  return makeStatus(config, readSession());
+}
+
+export async function getSyncMfaStatus(): Promise<SyncMfaStatus> {
+  const config = requireConfig();
+  return requestAuthedJsonWithRouteFallback<SyncMfaStatusResponse>(
+    config,
+    '/v1/auth/mfa/status',
+    '/v1/mfa/status'
+  );
+}
+
+export async function setupSyncMfa(): Promise<SyncMfaSetup> {
+  const config = requireConfig();
+  return requestAuthedJsonWithRouteFallback<SyncMfaSetupResponse>(
+    config,
+    '/v1/auth/mfa/setup',
+    '/v1/mfa/setup',
+    { method: 'POST' }
+  );
+}
+
+export async function enableSyncMfa(code: string): Promise<SyncMfaStatus> {
+  const config = requireConfig();
+  await requestAuthedJsonWithRouteFallback<{ mfaEnabled: boolean }>(
+    config,
+    '/v1/auth/mfa/enable',
+    '/v1/mfa/enable',
+    {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }
+  );
+  return getSyncMfaStatus();
+}
+
+export async function disableSyncMfa(code: string): Promise<SyncMfaStatus> {
+  const config = requireConfig();
+  await requestAuthedJsonWithRouteFallback<{ mfaEnabled: boolean }>(
+    config,
+    '/v1/auth/mfa/disable',
+    '/v1/mfa/disable',
+    {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }
+  );
+  return getSyncMfaStatus();
 }
 
 export async function logoutSync(): Promise<SyncStatus> {
