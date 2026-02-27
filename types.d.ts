@@ -92,6 +92,53 @@ type ExtensionOpenFolderResultDto = {
   error?: string;
 };
 
+type SyncConfigDto = {
+  baseUrl: string;
+  username: string;
+  deviceName?: string;
+};
+
+type SyncBootstrapDto = {
+  password: string;
+  bootstrapToken: string;
+};
+
+type SyncLoginDto = {
+  password: string;
+};
+
+type SyncStatusDto = {
+  configured: boolean;
+  loggedIn: boolean;
+  baseUrl?: string;
+  username?: string;
+  deviceName?: string;
+  cursor: number;
+  lastSyncAt?: number;
+  lastSyncAttemptAt?: number;
+  lastSyncError?: string;
+};
+
+type SyncPushResultDto = {
+  sent: number;
+  applied: number;
+  skipped: number;
+  cursor: number;
+};
+
+type SyncPullResultDto = {
+  received: number;
+  applied: number;
+  deleted: number;
+  cursor: number;
+  hasMore: boolean;
+};
+
+type SyncRunResultDto = {
+  push: SyncPushResultDto;
+  pull: SyncPullResultDto;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 type RendererEvents = {
@@ -154,6 +201,26 @@ type IPCHandlers = {
   'extension:open-folder': () => Promise<ExtensionOpenFolderResultDto>;
   /** Re-runs the native messaging host registration (rewrites bat + registry keys). */
   'extension:reload-registration': () => Promise<{ ok: boolean; error?: string }>;
+
+  // —— Sync operations ——————————————————————————————————————————————————————————————
+  /** Returns current local sync config/session status. */
+  'sync:getStatus': () => Promise<SyncStatusDto>;
+  /** Persists sync endpoint + username/device metadata. */
+  'sync:setConfig': (config: SyncConfigDto) => Promise<SyncStatusDto>;
+  /** Removes local sync config and session data. */
+  'sync:clearConfig': () => Promise<SyncStatusDto>;
+  /** One-time account bootstrap against a fresh server. */
+  'sync:bootstrap': (payload: SyncBootstrapDto) => Promise<SyncStatusDto>;
+  /** Login to sync server and store encrypted refresh/access session. */
+  'sync:login': (payload: SyncLoginDto) => Promise<SyncStatusDto>;
+  /** Logout and clear local session state. */
+  'sync:logout': () => Promise<SyncStatusDto>;
+  /** Pushes locally queued encrypted changes. */
+  'sync:push': () => Promise<SyncPushResultDto>;
+  /** Pulls remote encrypted changes since local cursor. */
+  'sync:pull': () => Promise<SyncPullResultDto>;
+  /** Convenience: push then pull in one call. */
+  'sync:syncNow': () => Promise<SyncRunResultDto>;
 };
 
 // 2) helpers derived from IPCHandlers

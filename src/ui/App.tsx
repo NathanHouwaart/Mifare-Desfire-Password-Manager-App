@@ -105,6 +105,21 @@ function App() {
     return () => cancelAnimationFrame(id);
   }, [unlocked]);
 
+  // Trigger a sync pass right after unlock so local changes reconcile quickly.
+  useEffect(() => {
+    if (!unlocked) return;
+    const syncOnUnlock = async () => {
+      try {
+        const status = await window.electron['sync:getStatus']();
+        if (!status.configured || !status.loggedIn) return;
+        await window.electron['sync:syncNow']();
+      } catch (err) {
+        console.warn('[sync] unlock sync failed', err);
+      }
+    };
+    void syncOnUnlock();
+  }, [unlocked]);
+
   const toggleTheme = () =>
     setTheme(prev => {
       const next = prev === 'dark' ? 'light' : 'dark';

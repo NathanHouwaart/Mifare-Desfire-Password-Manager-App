@@ -1,5 +1,5 @@
-import { useState, type ReactNode, type ComponentType } from 'react';
-import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe } from 'lucide-react';
+import { useEffect, useState, type ReactNode, type ComponentType } from 'react';
+import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe, Cloud, RefreshCw } from 'lucide-react';
 
 const PIN_HASH_KEY = 'app-pin-hash';
 
@@ -151,6 +151,20 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [extFolderBusy, setExtFolderBusy] = useState(false);
   const [extFolderFeedback, setExtFolderFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
 
+  const [syncStatus, setSyncStatus] = useState<SyncStatusDto | null>(null);
+  const [syncBaseUrl, setSyncBaseUrl] = useState('');
+  const [syncUsername, setSyncUsername] = useState('');
+  const [syncDeviceName, setSyncDeviceName] = useState('');
+  const [syncPassword, setSyncPassword] = useState('');
+  const [syncBootstrapToken, setSyncBootstrapToken] = useState('');
+  const [syncFeedback, setSyncFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+  const [syncConfigBusy, setSyncConfigBusy] = useState(false);
+  const [syncAuthBusy, setSyncAuthBusy] = useState(false);
+  const [syncNowBusy, setSyncNowBusy] = useState(false);
+  const [syncLogoutBusy, setSyncLogoutBusy] = useState(false);
+  const [syncClearBusy, setSyncClearBusy] = useState(false);
+  const [syncHydrated, setSyncHydrated] = useState(false);
+
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
   };
@@ -236,6 +250,152 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   };
 
   // ── Settings search ─────────────────────────────────────────────
+  const syncFeedbackFor = (type: 'ok' | 'err', message: string, timeoutMs = 6000) => {
+    setSyncFeedback({ type, message });
+    window.setTimeout(() => setSyncFeedback(null), timeoutMs);
+  };
+
+  const refreshSyncStatus = async (hydrateInputs = false) => {
+    try {
+      const status = await window.electron['sync:getStatus']();
+      setSyncStatus(status);
+      if (hydrateInputs || !syncHydrated) {
+        setSyncBaseUrl(status.baseUrl ?? '');
+        setSyncUsername(status.username ?? '');
+        setSyncDeviceName(status.deviceName ?? '');
+        setSyncHydrated(true);
+      }
+    } catch (e) {
+      setSyncStatus(null);
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  useEffect(() => {
+    void refreshSyncStatus(true);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSaveSyncConfig = async () => {
+    if (!syncBaseUrl.trim() || !syncUsername.trim()) {
+      syncFeedbackFor('err', 'Sync URL and username are required.');
+      return;
+    }
+    setSyncConfigBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:setConfig']({
+        baseUrl: syncBaseUrl.trim(),
+        username: syncUsername.trim(),
+        deviceName: syncDeviceName.trim() || undefined,
+      });
+      setSyncStatus(status);
+      setSyncBaseUrl(status.baseUrl ?? '');
+      setSyncUsername(status.username ?? '');
+      setSyncDeviceName(status.deviceName ?? '');
+      syncFeedbackFor('ok', 'Sync config saved.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncConfigBusy(false);
+    }
+  };
+
+  const handleSyncBootstrap = async () => {
+    if (!syncPassword.trim()) {
+      syncFeedbackFor('err', 'Sync password is required.');
+      return;
+    }
+    if (!syncBootstrapToken.trim()) {
+      syncFeedbackFor('err', 'Bootstrap token is required.');
+      return;
+    }
+    setSyncAuthBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:bootstrap']({
+        password: syncPassword,
+        bootstrapToken: syncBootstrapToken.trim(),
+      });
+      setSyncStatus(status);
+      setSyncPassword('');
+      syncFeedbackFor('ok', `Account bootstrapped for ${status.username}.`);
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncAuthBusy(false);
+    }
+  };
+
+  const handleSyncLogin = async () => {
+    if (!syncPassword.trim()) {
+      syncFeedbackFor('err', 'Sync password is required.');
+      return;
+    }
+    setSyncAuthBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:login']({ password: syncPassword });
+      setSyncStatus(status);
+      setSyncPassword('');
+      syncFeedbackFor('ok', `Logged in as ${status.username}.`);
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncAuthBusy(false);
+    }
+  };
+
+  const handleSyncNow = async () => {
+    setSyncNowBusy(true);
+    setSyncFeedback(null);
+    try {
+      const result = await window.electron['sync:syncNow']();
+      await refreshSyncStatus();
+      syncFeedbackFor(
+        'ok',
+        `Sync complete. Push ${result.push.sent}/${result.push.applied}, pull ${result.pull.received}/${result.pull.applied}, deleted ${result.pull.deleted}.`
+      );
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncNowBusy(false);
+    }
+  };
+
+  const handleSyncLogout = async () => {
+    setSyncLogoutBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:logout']();
+      setSyncStatus(status);
+      syncFeedbackFor('ok', 'Sync session logged out.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncLogoutBusy(false);
+    }
+  };
+
+  const handleSyncClearConfig = async () => {
+    if (!window.confirm('Remove sync config and local sync session for this device?')) return;
+    setSyncClearBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:clearConfig']();
+      setSyncStatus(status);
+      setSyncBaseUrl('');
+      setSyncUsername('');
+      setSyncDeviceName('');
+      setSyncPassword('');
+      setSyncBootstrapToken('');
+      syncFeedbackFor('ok', 'Sync config and session removed.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncClearBusy(false);
+    }
+  };
+
   const [settingsSearch, setSettingsSearch] = useState('');
   const q = settingsSearch.trim().toLowerCase();
   const show = (...texts: string[]) => !q || texts.some(t => t.toLowerCase().includes(q));
@@ -252,6 +412,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Auto-connect on Startup', 'Connect to the last-used COM port automatically')
              || show('Connection Timeout', 'Abort the connection attempt after this duration')
              || show('Retry Attempts', 'Number of times to retry a failed connection'),
+    sync:       show('Sync Status', 'Background sync every 2 minutes when logged in')
+             || show('Sync URL', 'Username', 'Device Name')
+             || show('Save Config', 'Bootstrap', 'Login', 'Sync Now', 'Logout', 'Reset Sync'),
     data:       show('Export Vault', 'Save an encrypted backup of your passwords')
              || show('Import Vault', 'Restore passwords from an encrypted backup')
              || show('App Version', '0.1.0') || show('Stack', 'Electron React C++')
@@ -261,6 +424,8 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Open Extension Folder', 'Load the extension in Chrome or Firefox'),
   };
   const noResults = q.length > 0 && !Object.values(showSec).some(Boolean);
+  const formatSyncTime = (timestamp?: number) =>
+    timestamp ? new Date(timestamp).toLocaleString() : 'Never';
 
   return (
     <div className="px-6 py-6 max-w-2xl w-full mx-auto">
@@ -495,6 +660,157 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                 feedback={extRegFeedback}
                 onClick={handleReloadRegistration}
               />
+            )}
+          </Section>
+        )}
+
+        {/* Sync */}
+        {showSec.sync && (
+          <Section title="Sync" icon={Cloud}>
+            {show('Sync Status', 'Background sync every 2 minutes when logged in') && (
+              <div className="px-5 py-4 flex flex-col gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                    syncStatus?.configured
+                      ? 'text-ok border-ok-edge bg-ok-soft'
+                      : 'text-dim border-edge bg-input'
+                  }`}>
+                    {syncStatus?.configured ? 'Configured' : 'Not Configured'}
+                  </span>
+                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                    syncStatus?.loggedIn
+                      ? 'text-ok border-ok-edge bg-ok-soft'
+                      : 'text-dim border-edge bg-input'
+                  }`}>
+                    {syncStatus?.loggedIn ? 'Logged In' : 'Logged Out'}
+                  </span>
+                  <span className="text-[12px] px-2 py-1 rounded-lg border text-dim border-edge bg-input">
+                    Cursor: {syncStatus?.cursor ?? 0}
+                  </span>
+                </div>
+                <p className="text-[13px] text-lo">
+                  Background sync runs every 2 minutes while logged in.
+                </p>
+                <p className="text-[13px] text-lo">
+                  Last successful sync: {formatSyncTime(syncStatus?.lastSyncAt)}
+                </p>
+                <p className="text-[13px] text-lo">
+                  Last sync attempt: {formatSyncTime(syncStatus?.lastSyncAttemptAt)}
+                </p>
+                {syncStatus?.lastSyncError && (
+                  <p className="text-[13px] text-err">
+                    Last sync error: {syncStatus.lastSyncError}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {show('Sync URL', 'Username', 'Device Name', 'Save Config') && (
+              <div className="px-5 py-4 flex flex-col gap-3">
+                <p className="text-[16px] font-medium text-hi">Sync Configuration</p>
+                <div className="grid grid-cols-1 gap-2.5">
+                  <input
+                    type="text"
+                    value={syncBaseUrl}
+                    onChange={(e) => setSyncBaseUrl(e.target.value)}
+                    placeholder="Sync URL (for example: https://100.x.x.x:8787)"
+                    className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
+                  />
+                  <input
+                    type="text"
+                    value={syncUsername}
+                    onChange={(e) => setSyncUsername(e.target.value)}
+                    placeholder="Username"
+                    className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
+                  />
+                  <input
+                    type="text"
+                    value={syncDeviceName}
+                    onChange={(e) => setSyncDeviceName(e.target.value)}
+                    placeholder="Device Name (optional)"
+                    className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    onClick={handleSaveSyncConfig}
+                    disabled={syncConfigBusy}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {syncConfigBusy ? 'Saving...' : 'Save Config'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {show('Bootstrap', 'Login') && (
+              <div className="px-5 py-4 flex flex-col gap-3">
+                <p className="text-[16px] font-medium text-hi">Authentication</p>
+                <input
+                  type="password"
+                  value={syncPassword}
+                  onChange={(e) => setSyncPassword(e.target.value)}
+                  placeholder="Sync Password"
+                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
+                />
+                <input
+                  type="password"
+                  value={syncBootstrapToken}
+                  onChange={(e) => setSyncBootstrapToken(e.target.value)}
+                  placeholder="Bootstrap Token (first setup only)"
+                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
+                />
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={handleSyncBootstrap}
+                    disabled={syncAuthBusy}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {syncAuthBusy ? 'Working...' : 'Bootstrap'}
+                  </button>
+                  <button
+                    onClick={handleSyncLogin}
+                    disabled={syncAuthBusy}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {syncAuthBusy ? 'Working...' : 'Login'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {show('Sync Now', 'Logout', 'Reset Sync') && (
+              <div className="px-5 py-4 flex flex-col gap-2.5">
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={handleSyncNow}
+                    disabled={syncNowBusy || !syncStatus?.configured || !syncStatus?.loggedIn}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${syncNowBusy ? 'animate-spin' : ''}`} />
+                    {syncNowBusy ? 'Syncing...' : 'Sync Now'}
+                  </button>
+                  <button
+                    onClick={handleSyncLogout}
+                    disabled={syncLogoutBusy || !syncStatus?.loggedIn}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {syncLogoutBusy ? 'Logging out...' : 'Logout'}
+                  </button>
+                  <button
+                    onClick={handleSyncClearConfig}
+                    disabled={syncClearBusy}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-err border-err-edge bg-err-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {syncClearBusy ? 'Resetting...' : 'Reset Sync'}
+                  </button>
+                </div>
+                {syncFeedback && (
+                  <p className={`text-[13px] ${syncFeedback.type === 'ok' ? 'text-ok' : 'text-err'}`}>
+                    {syncFeedback.message}
+                  </p>
+                )}
+              </div>
             )}
           </Section>
         )}

@@ -32,3 +32,7 @@ build_tests
 # Native messaging host build artifacts
 native-host/host.exe
 native-host/host-error.log
+
+# Sync server local secrets
+sync-server/.env
+deploy/pi-sync/.env

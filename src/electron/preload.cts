@@ -42,6 +42,17 @@ electron.contextBridge.exposeInMainWorld("electron", {
     // Browser extension helpers
     'extension:open-folder':          () => ipcInvoke('extension:open-folder'),
     'extension:reload-registration':  () => ipcInvoke('extension:reload-registration'),
+
+    // Sync helpers
+    'sync:getStatus':   () => ipcInvoke('sync:getStatus'),
+    'sync:setConfig':   (config: SyncConfigDto) => ipcInvoke('sync:setConfig', config),
+    'sync:clearConfig': () => ipcInvoke('sync:clearConfig'),
+    'sync:bootstrap':   (payload: SyncBootstrapDto) => ipcInvoke('sync:bootstrap', payload),
+    'sync:login':       (payload: SyncLoginDto) => ipcInvoke('sync:login', payload),
+    'sync:logout':      () => ipcInvoke('sync:logout'),
+    'sync:push':        () => ipcInvoke('sync:push'),
+    'sync:pull':        () => ipcInvoke('sync:pull'),
+    'sync:syncNow':     () => ipcInvoke('sync:syncNow'),
 } satisfies Window["electron"]);
 
 

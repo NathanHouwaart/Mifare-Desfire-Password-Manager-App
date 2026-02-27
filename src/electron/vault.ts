@@ -47,6 +47,32 @@ export interface EntryWriteData {
   authTag: Buffer;
 }
 
+/** Deleted entry tombstone used for remote sync propagation. */
+export interface TombstoneRow {
+  id: string;
+  updatedAt: number;
+}
+
+/** Row format used by sync push/pull operations. */
+export interface SyncEntryRow {
+  id: string;
+  label: string;
+  url: string;
+  category: string;
+  createdAt: number;
+  updatedAt: number;
+  ciphertext: string;
+  iv: string;
+  authTag: string;
+  deleted: boolean;
+}
+
+export interface OutboxRow {
+  id: string;
+  updatedAt: number;
+  deleted: boolean;
+}
+
 // ── Schema migrations ─────────────────────────────────────────────────────────
 
 /**
@@ -85,6 +111,40 @@ const MIGRATIONS: Array<(db: Database.Database) => void> = [
   (db) => {
     db.exec(`ALTER TABLE entries ADD COLUMN category TEXT NOT NULL DEFAULT ''`);
     db.prepare('UPDATE schema_version SET version = 2').run();
+  },
+
+  // v2 → v3 — add sync metadata tables (cursor/state + delete tombstones)
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS deleted_tombstones (
+        id          TEXT    PRIMARY KEY,
+        updated_at  INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_tombstones_updated
+        ON deleted_tombstones(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS sync_state (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
+      );
+    `);
+    db.prepare('UPDATE schema_version SET version = 3').run();
+  },
+
+  // v3 → v4 — add durable outbox queue for local-only changes
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS sync_outbox (
+        id          TEXT PRIMARY KEY,
+        updated_at  INTEGER NOT NULL,
+        deleted     INTEGER NOT NULL CHECK (deleted IN (0, 1))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sync_outbox_updated
+        ON sync_outbox(updated_at ASC);
+    `);
+    db.prepare('UPDATE schema_version SET version = 4').run();
   },
 ];
 
@@ -190,10 +250,22 @@ export function getEntryRow(id: string): EntryRow | undefined {
 export function insertEntry(id: string, data: EntryWriteData): EntryListItem {
   const db = getDb();
   const now = Date.now();
-  db.prepare(`
-    INSERT INTO entries (id, label, url, category, created_at, updated_at, ciphertext, iv, auth_tag)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, data.label, data.url, data.category, now, now, data.ciphertext, data.iv, data.authTag);
+  const tx = db.transaction((entryId: string) => {
+    db.prepare(`
+      INSERT INTO entries (id, label, url, category, created_at, updated_at, ciphertext, iv, auth_tag)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(entryId, data.label, data.url, data.category, now, now, data.ciphertext, data.iv, data.authTag);
+
+    db.prepare('DELETE FROM deleted_tombstones WHERE id = ?').run(entryId);
+    db.prepare(`
+      INSERT INTO sync_outbox (id, updated_at, deleted)
+      VALUES (?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET
+        updated_at = excluded.updated_at,
+        deleted = 0
+    `).run(entryId, now);
+  });
+  tx(id);
   return { id, label: data.label, url: data.url, category: data.category, createdAt: now, updatedAt: now };
 }
 
@@ -201,29 +273,62 @@ export function insertEntry(id: string, data: EntryWriteData): EntryListItem {
 export function updateEntry(id: string, data: EntryWriteData): EntryListItem | undefined {
   const db = getDb();
   const now = Date.now();
-  const result = db.prepare(`
-    UPDATE entries
-    SET    label      = ?,
-           url        = ?,
-           category   = ?,
-           updated_at = ?,
-           ciphertext = ?,
-           iv         = ?,
-           auth_tag   = ?
-    WHERE  id = ?
-  `).run(data.label, data.url, data.category, now, data.ciphertext, data.iv, data.authTag, id);
+  const tx = db.transaction((entryId: string) => {
+    const result = db.prepare(`
+      UPDATE entries
+      SET    label      = ?,
+             url        = ?,
+             category   = ?,
+             updated_at = ?,
+             ciphertext = ?,
+             iv         = ?,
+             auth_tag   = ?
+      WHERE  id = ?
+    `).run(data.label, data.url, data.category, now, data.ciphertext, data.iv, data.authTag, entryId);
 
-  if (result.changes === 0) return undefined;
+    if (result.changes === 0) return undefined;
 
-  const row = db.prepare('SELECT created_at AS createdAt FROM entries WHERE id = ?')
-    .get(id) as { createdAt: number };
-  return { id, label: data.label, url: data.url, category: data.category, createdAt: row.createdAt, updatedAt: now };
+    db.prepare('DELETE FROM deleted_tombstones WHERE id = ?').run(entryId);
+    db.prepare(`
+      INSERT INTO sync_outbox (id, updated_at, deleted)
+      VALUES (?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET
+        updated_at = excluded.updated_at,
+        deleted = 0
+    `).run(entryId, now);
+
+    const row = db.prepare('SELECT created_at AS createdAt FROM entries WHERE id = ?')
+      .get(entryId) as { createdAt: number };
+    return { id: entryId, label: data.label, url: data.url, category: data.category, createdAt: row.createdAt, updatedAt: now };
+  });
+
+  return tx(id);
 }
 
 /** Permanently deletes an entry. Returns true if a row was deleted. */
 export function deleteEntry(id: string): boolean {
   const db = getDb();
-  return db.prepare('DELETE FROM entries WHERE id = ?').run(id).changes > 0;
+  const now = Date.now();
+  const tx = db.transaction((entryId: string, ts: number) => {
+    const deleted = db.prepare('DELETE FROM entries WHERE id = ?').run(entryId).changes > 0;
+    if (deleted) {
+      db.prepare(`
+        INSERT INTO deleted_tombstones (id, updated_at)
+        VALUES (?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          updated_at = excluded.updated_at
+      `).run(entryId, ts);
+      db.prepare(`
+        INSERT INTO sync_outbox (id, updated_at, deleted)
+        VALUES (?, ?, 1)
+        ON CONFLICT(id) DO UPDATE SET
+          updated_at = excluded.updated_at,
+          deleted = 1
+      `).run(entryId, ts);
+    }
+    return deleted;
+  });
+  return tx(id, now);
 }
 
 /**
@@ -232,7 +337,10 @@ export function deleteEntry(id: string): boolean {
  * With the secret gone, all derived entry keys are permanently irrecoverable.
  */
 export function wipeVault(): void {
-  getDb().exec('DELETE FROM entries');
+  const db = getDb();
+  db.exec('DELETE FROM entries');
+  db.exec('DELETE FROM deleted_tombstones');
+  db.exec('DELETE FROM sync_outbox');
 }
 
 /** Returns all full rows including encrypted blobs — used by vault:export. */
@@ -271,4 +379,179 @@ export function insertEntryRaw(row: EntryRow): boolean {
     // UNIQUE constraint violation — entry already exists; skip silently.
     return false;
   }
+}
+
+/** Returns encrypted entry rows changed since the given timestamp (inclusive of greater only). */
+export function getEntriesUpdatedSince(sinceTs: number, limit = 1000): EntryRow[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT id, label, url, category,
+           created_at AS createdAt,
+           updated_at AS updatedAt,
+           ciphertext,
+           iv,
+           auth_tag AS authTag
+    FROM entries
+    WHERE updated_at > ?
+    ORDER BY updated_at ASC
+    LIMIT ?
+  `).all(sinceTs, limit) as EntryRow[];
+}
+
+/** Returns local delete tombstones changed since the given timestamp. */
+export function getTombstonesUpdatedSince(sinceTs: number, limit = 1000): TombstoneRow[] {
+  const db = getDb();
+  return db.prepare(`
+    SELECT id, updated_at AS updatedAt
+    FROM deleted_tombstones
+    WHERE updated_at > ?
+    ORDER BY updated_at ASC
+    LIMIT ?
+  `).all(sinceTs, limit) as TombstoneRow[];
+}
+
+/** LWW upsert from remote sync payload. Returns true when applied, false when stale. */
+export function applyRemoteUpsert(row: SyncEntryRow): boolean {
+  const db = getDb();
+  const tx = db.transaction((payload: SyncEntryRow) => {
+    if (payload.deleted) return false;
+
+    const existing = db.prepare(`
+      SELECT id, updated_at AS updatedAt
+      FROM entries
+      WHERE id = ?
+    `).get(payload.id) as { id: string; updatedAt: number } | undefined;
+
+    const tomb = db.prepare(`
+      SELECT id, updated_at AS updatedAt
+      FROM deleted_tombstones
+      WHERE id = ?
+    `).get(payload.id) as { id: string; updatedAt: number } | undefined;
+
+    const currentMaxTs = Math.max(existing?.updatedAt ?? 0, tomb?.updatedAt ?? 0);
+    if (currentMaxTs >= payload.updatedAt) return false;
+
+    db.prepare(`
+      DELETE FROM deleted_tombstones
+      WHERE id = ?
+    `).run(payload.id);
+
+    db.prepare(`
+      INSERT INTO entries (
+        id, label, url, category, created_at, updated_at, ciphertext, iv, auth_tag
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        label = excluded.label,
+        url = excluded.url,
+        category = excluded.category,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at,
+        ciphertext = excluded.ciphertext,
+        iv = excluded.iv,
+        auth_tag = excluded.auth_tag
+      WHERE entries.updated_at < excluded.updated_at
+    `).run(
+      payload.id,
+      payload.label,
+      payload.url,
+      payload.category,
+      payload.createdAt,
+      payload.updatedAt,
+      Buffer.from(payload.ciphertext, 'base64'),
+      Buffer.from(payload.iv, 'base64'),
+      Buffer.from(payload.authTag, 'base64'),
+    );
+
+    db.prepare('DELETE FROM sync_outbox WHERE id = ?').run(payload.id);
+
+    return true;
+  });
+
+  return tx(row);
+}
+
+/** Applies remote delete tombstone with LWW semantics. */
+export function applyRemoteDelete(id: string, updatedAt: number): boolean {
+  const db = getDb();
+  const tx = db.transaction((entryId: string, ts: number) => {
+    const existing = db.prepare(`
+      SELECT id, updated_at AS updatedAt
+      FROM entries
+      WHERE id = ?
+    `).get(entryId) as { id: string; updatedAt: number } | undefined;
+
+    const tomb = db.prepare(`
+      SELECT id, updated_at AS updatedAt
+      FROM deleted_tombstones
+      WHERE id = ?
+    `).get(entryId) as { id: string; updatedAt: number } | undefined;
+
+    const currentMaxTs = Math.max(existing?.updatedAt ?? 0, tomb?.updatedAt ?? 0);
+    if (currentMaxTs >= ts) return false;
+
+    db.prepare('DELETE FROM entries WHERE id = ?').run(entryId);
+    db.prepare(`
+      INSERT INTO deleted_tombstones (id, updated_at)
+      VALUES (?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        updated_at = excluded.updated_at
+    `).run(entryId, ts);
+
+    db.prepare('DELETE FROM sync_outbox WHERE id = ?').run(entryId);
+
+    return true;
+  });
+
+  return tx(id, updatedAt);
+}
+
+/** Generic sync state key-value store, persisted in SQLite. */
+export function getSyncStateValue(key: string): string | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT value
+    FROM sync_state
+    WHERE key = ?
+  `).get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setSyncStateValue(key: string, value: string): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO sync_state (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value
+  `).run(key, value);
+}
+
+export function listOutbox(limit = 500): OutboxRow[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT
+      id,
+      updated_at AS updatedAt,
+      deleted
+    FROM sync_outbox
+    ORDER BY updated_at ASC
+    LIMIT ?
+  `).all(limit) as Array<{ id: string; updatedAt: number; deleted: number }>;
+
+  return rows.map((row) => ({
+    id: row.id,
+    updatedAt: row.updatedAt,
+    deleted: row.deleted === 1,
+  }));
+}
+
+export function clearOutbox(ids: readonly string[]): void {
+  if (ids.length === 0) return;
+  const db = getDb();
+  const tx = db.transaction((values: readonly string[]) => {
+    const stmt = db.prepare('DELETE FROM sync_outbox WHERE id = ?');
+    for (const id of values) stmt.run(id);
+  });
+  tx(ids);
 }

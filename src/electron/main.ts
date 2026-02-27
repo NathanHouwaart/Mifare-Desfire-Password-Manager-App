@@ -11,6 +11,8 @@ import { getPreloadPath, getUIPath } from './pathResolver.js';
 import { openVault, closeVault } from './vault.js';
 import { registerCardHandlers } from './cardHandlers.js';
 import { registerVaultHandlers } from './vaultHandlers.js';
+import { registerSyncHandlers }  from './syncHandlers.js';
+import { getSyncStatus, runFullSync } from './syncService.js';
 import { startBridgeServer }    from './bridgeServer.js';
 import { cancelCardWait }       from './nfcCancel.js';
 import { registerNativeHost }   from './nativeHostRegistrar.js';
@@ -31,6 +33,10 @@ let bridgeServer: Server | null = null;
 let shutdownInProgress = false;
 const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twice from 100%
 const ZOOM_SHORTCUT_KEYS = new Set(['+', '=', '-', '_', '0', 'Add', 'Subtract', 'NumpadAdd', 'NumpadSubtract']);
+const AUTO_SYNC_INTERVAL_MS = 2 * 60 * 1000;
+
+let autoSyncTimer: NodeJS.Timeout | null = null;
+let autoSyncRunning = false;
 
 if (process.platform === 'win32') {
   // Keep taskbar grouping/icon tied to our explicit app identity.
@@ -101,6 +107,45 @@ function sendLogToRenderer(level: 'info' | 'warn' | 'error', message: string) {
 function nfcLog(level: 'info' | 'warn' | 'error', message: string) {
   console.log(`[NFC-${level.toUpperCase()}] ${message}`);
   sendLogToRenderer(level, message);
+}
+
+async function runBackgroundSync(reason: 'startup' | 'interval'): Promise<void> {
+  if (autoSyncRunning) return;
+
+  const status = getSyncStatus();
+  if (!status.configured || !status.loggedIn) return;
+
+  autoSyncRunning = true;
+  try {
+    const result = await runFullSync();
+    const didWork = result.push.sent > 0 || result.pull.received > 0;
+    if (didWork) {
+      nfcLog(
+        'info',
+        `[sync] ${reason}: push sent=${result.push.sent}, applied=${result.push.applied}; ` +
+        `pull received=${result.pull.received}, applied=${result.pull.applied}, deleted=${result.pull.deleted}`
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    nfcLog('warn', `[sync] ${reason} failed: ${msg}`);
+  } finally {
+    autoSyncRunning = false;
+  }
+}
+
+function startBackgroundSyncLoop(): void {
+  if (autoSyncTimer) return;
+  void runBackgroundSync('startup');
+  autoSyncTimer = setInterval(() => {
+    void runBackgroundSync('interval');
+  }, AUTO_SYNC_INTERVAL_MS);
+}
+
+function stopBackgroundSyncLoop(): void {
+  if (!autoSyncTimer) return;
+  clearInterval(autoSyncTimer);
+  autoSyncTimer = null;
 }
 
 function applyLockedZoom(win: BrowserWindow | null) {
@@ -208,6 +253,8 @@ app.on('ready', () => {
   // Register card and vault IPC handlers now that nfcBinding exists.
   registerCardHandlers(nfcBinding, nfcLog);
   registerVaultHandlers(nfcBinding, nfcLog);
+  registerSyncHandlers(nfcLog);
+  startBackgroundSyncLoop();
 
   // Start the named-pipe bridge that feeds the browser extension.
   bridgeServer = startBridgeServer(nfcBinding, nfcLog);
@@ -497,6 +544,8 @@ app.on('before-quit', (event) => {
 
   void (async () => {
     try {
+      stopBackgroundSyncLoop();
+
       // Stop new extension-host requests and cancel any active card wait loop.
       cancelCardWait();
       if (bridgeServer) {
