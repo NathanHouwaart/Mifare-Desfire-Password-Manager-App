@@ -53,6 +53,11 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'sync:push':        () => ipcInvoke('sync:push'),
     'sync:pull':        () => ipcInvoke('sync:pull'),
     'sync:syncNow':     () => ipcInvoke('sync:syncNow'),
+    'sync:getVaultKeyEnvelope': () => ipcInvoke('sync:getVaultKeyEnvelope'),
+    'sync:getVaultKeyStatus':   () => ipcInvoke('sync:getVaultKeyStatus'),
+    'sync:initVaultKey':        (payload: SyncVaultKeyPassphraseDto) => ipcInvoke('sync:initVaultKey', payload),
+    'sync:unlockVaultKey':      (payload: SyncVaultKeyPassphraseDto) => ipcInvoke('sync:unlockVaultKey', payload),
+    'sync:lockVaultKey':        () => ipcInvoke('sync:lockVaultKey'),
 } satisfies Window["electron"]);
 
 

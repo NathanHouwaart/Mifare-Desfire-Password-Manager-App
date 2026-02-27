@@ -14,6 +14,8 @@ This scaffold adds a sync API and deployment stack without changing your current
   - `POST /v1/auth/login`
   - `POST /v1/auth/refresh`
   - `POST /v1/auth/logout`
+  - `GET /v1/keys/envelope`
+  - `PUT /v1/keys/envelope`
   - `POST /v1/sync/push`
   - `GET /v1/sync/pull`
   - `GET /v1/sync/cursor`
@@ -55,6 +57,21 @@ After bootstrap, the endpoint returns `409` and cannot be reused unless DB is re
 - Settings page now includes Sync controls for:
   - endpoint/username/device config
   - bootstrap/login/logout
+  - vault key envelope init/unlock/lock
   - manual `Sync Now`
   - local sync reset
 - Main process runs background sync every 2 minutes when sync is configured and logged in.
+
+## Portable key flow (Phase 1)
+- On your first/original device:
+  - Login to sync.
+  - In Settings -> Sync -> Vault Key, click `Initialize` once.
+  - This wraps the current local machine secret into a password-protected envelope and uploads it.
+- On each additional device:
+  - Login to sync.
+  - In Settings -> Sync -> Vault Key, enter the same passphrase and click `Unlock`.
+  - Card auth + entry decrypt now use the unlocked shared root key, so the same DESFire card works across devices.
+
+Notes:
+- You still tap the card for each credential decrypt/fill.
+- If you click `Lock` or restart app, unlock again on that device before card operations.

@@ -78,5 +78,18 @@ async function runMigrations(pool: Pool): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_sync_changes_user_seq
       ON sync_changes (user_id, seq);
+
+    CREATE TABLE IF NOT EXISTS user_key_envelopes (
+      user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      key_version INTEGER NOT NULL,
+      kdf TEXT NOT NULL,
+      kdf_params JSONB NOT NULL,
+      salt TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      auth_tag TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 }

@@ -107,6 +107,10 @@ type SyncLoginDto = {
   password: string;
 };
 
+type SyncVaultKeyPassphraseDto = {
+  passphrase: string;
+};
+
 type SyncStatusDto = {
   configured: boolean;
   loggedIn: boolean;
@@ -137,6 +141,31 @@ type SyncPullResultDto = {
 type SyncRunResultDto = {
   push: SyncPushResultDto;
   pull: SyncPullResultDto;
+};
+
+type SyncVaultKeyEnvelopeDto = {
+  keyVersion: number;
+  kdf: 'scrypt-v1';
+  kdfParams: {
+    N: number;
+    r: number;
+    p: number;
+    dkLen: number;
+  };
+  salt: string;
+  nonce: string;
+  ciphertext: string;
+  authTag: string;
+  updatedAt?: string;
+};
+
+type SyncVaultKeyStatusDto = {
+  configured: boolean;
+  loggedIn: boolean;
+  hasRemoteEnvelope: boolean;
+  hasLocalUnlockedKey: boolean;
+  keyVersion?: number;
+  unlockedAt?: number;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,6 +250,16 @@ type IPCHandlers = {
   'sync:pull': () => Promise<SyncPullResultDto>;
   /** Convenience: push then pull in one call. */
   'sync:syncNow': () => Promise<SyncRunResultDto>;
+  /** Fetches server-stored vault key envelope. */
+  'sync:getVaultKeyEnvelope': () => Promise<SyncVaultKeyEnvelopeDto | null>;
+  /** Returns local+remote vault key manager status. */
+  'sync:getVaultKeyStatus': () => Promise<SyncVaultKeyStatusDto>;
+  /** Creates a new vault root key envelope and uploads it to the sync server. */
+  'sync:initVaultKey': (payload: SyncVaultKeyPassphraseDto) => Promise<SyncVaultKeyStatusDto>;
+  /** Downloads and unlocks the vault root key envelope into local process memory. */
+  'sync:unlockVaultKey': (payload: SyncVaultKeyPassphraseDto) => Promise<SyncVaultKeyStatusDto>;
+  /** Clears locally-unlocked vault root key from process memory. */
+  'sync:lockVaultKey': () => Promise<SyncVaultKeyStatusDto>;
 };
 
 // 2) helpers derived from IPCHandlers

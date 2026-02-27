@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import { loadConfig } from './config.js';
 import { createPool } from './db.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerKeyRoutes } from './routes/keys.js';
 import { registerSyncRoutes } from './routes/sync.js';
 
 async function main(): Promise<void> {
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
   });
 
   app.use('/v1/auth', registerAuthRoutes({ pool, config }));
+  app.use('/v1/keys', registerKeyRoutes({ pool, config }));
   app.use('/v1/sync', registerSyncRoutes({ pool, config }));
 
   app.use((_req, res) => {

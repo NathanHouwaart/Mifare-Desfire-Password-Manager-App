@@ -6,8 +6,9 @@
  *
  * Card-gated handlers (vault:getEntry, vault:createEntry, vault:updateEntry)
  * wait for a card tap, read the 16-byte card_secret via an authenticated DESFire
- * ReadData, derive a per-entry AES-256 key, then encrypt/decrypt in the main
- * process. The card_secret and all derived keys are zeroized after use.
+ * ReadData, derive a per-entry AES-256 key from card_secret + active root
+ * secret, then encrypt/decrypt in the main process. card_secret and derived
+ * key buffers are zeroized after use.
  *
  * Must only run in the main process.
  */
@@ -16,7 +17,7 @@ import { ipcMain, IpcMainInvokeEvent, dialog, BrowserWindow } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { NfcCppBinding } from './bindings.js';
-import { getMachineSecret } from './main.js';
+import { getCryptoRootSecret } from './main.js';
 import {
   deriveCardKey,
   deriveEntryKey,
@@ -70,9 +71,9 @@ function uidToBuffer(uidHex: string): Buffer {
 /**
  * Core card-gated key derivation flow:
  *   1. Wait for card tap  →  get UID
- *   2. Derive read key from machineSecret + UID
+ *   2. Derive read key from active root secret + UID
  *   3. Read 16-byte card_secret from File 00 (authenticated via read key)
- *   4. Derive per-entry AES-256 key from cardSecret + machineSecret + entryId
+ *   4. Derive per-entry AES-256 key from cardSecret + active root secret + entryId
  *   5. Call fn(entryKey) — synchronous crypto only
  *   6. Zeroize all sensitive buffers
  *
@@ -84,27 +85,31 @@ async function withEntryKey<T>(
   fn:         (entryKey: Buffer) => T
 ): Promise<T> {
   const signal        = beginCardWait();
-  const machineSecret = getMachineSecret();
-  const uidHex        = await waitForCard(nfcBinding, signal);
-  const uidBuf        = uidToBuffer(uidHex);
-
-  // Derive and use read key ephemerally
-  const readKey = deriveCardKey(machineSecret, uidBuf, 0x02);
-  let cardSecretBuf: Buffer;
+  const rootSecret    = getCryptoRootSecret();
   try {
-    const raw = await nfcBinding.readCardSecret(Array.from(readKey));
-    cardSecretBuf = Buffer.from(raw);
-  } finally {
-    zeroizeBuffer(readKey);
-  }
+    const uidHex = await waitForCard(nfcBinding, signal);
+    const uidBuf = uidToBuffer(uidHex);
 
-  // Derive per-entry key then invoke the crypto function
-  const entryKey = deriveEntryKey(cardSecretBuf, machineSecret, entryId);
-  zeroizeBuffer(cardSecretBuf);
-  try {
-    return fn(entryKey);
+    // Derive and use read key ephemerally
+    const readKey = deriveCardKey(rootSecret, uidBuf, 0x02);
+    let cardSecretBuf: Buffer;
+    try {
+      const raw = await nfcBinding.readCardSecret(Array.from(readKey));
+      cardSecretBuf = Buffer.from(raw);
+    } finally {
+      zeroizeBuffer(readKey);
+    }
+
+    // Derive per-entry key then invoke the crypto function
+    const entryKey = deriveEntryKey(cardSecretBuf, rootSecret, entryId);
+    zeroizeBuffer(cardSecretBuf);
+    try {
+      return fn(entryKey);
+    } finally {
+      zeroizeBuffer(entryKey);
+    }
   } finally {
-    zeroizeBuffer(entryKey);
+    zeroizeBuffer(rootSecret);
   }
 }
 
@@ -248,7 +253,7 @@ export function registerVaultHandlers(
       version:    1,
       appVersion: '0.1.0',
       exportedAt: Date.now(),
-      note:       'Restore requires the same device and the same NFC card.',
+      note:       'Restore requires the same NFC card and matching root key (local machine secret or unlocked synced vault key).',
       entries:    rows.map(r => ({
         id:         r.id,
         label:      r.label,

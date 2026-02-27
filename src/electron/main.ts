@@ -13,6 +13,7 @@ import { registerCardHandlers } from './cardHandlers.js';
 import { registerVaultHandlers } from './vaultHandlers.js';
 import { registerSyncHandlers }  from './syncHandlers.js';
 import { getSyncStatus, runFullSync } from './syncService.js';
+import { clearUnlockedVaultRootKey, getUnlockedVaultRootKey } from './vaultKeyManager.js';
 import { startBridgeServer }    from './bridgeServer.js';
 import { cancelCardWait }       from './nfcCancel.js';
 import { registerNativeHost }   from './nativeHostRegistrar.js';
@@ -65,6 +66,17 @@ let machineSecret: Buffer | null = null;
 export function getMachineSecret(): Buffer {
   if (!machineSecret) throw new Error('Machine secret not initialised');
   return machineSecret;
+}
+
+/**
+ * Active crypto root secret used for card auth + entry key derivation.
+ * Prefers the unlocked synced root key (portable across devices), and falls
+ * back to this device's machine secret for legacy/single-device usage.
+ */
+export function getCryptoRootSecret(): Buffer {
+  const unlocked = getUnlockedVaultRootKey();
+  if (unlocked) return unlocked;
+  return Buffer.from(getMachineSecret());
 }
 
 function initMachineSecret(): void {
@@ -253,7 +265,7 @@ app.on('ready', () => {
   // Register card and vault IPC handlers now that nfcBinding exists.
   registerCardHandlers(nfcBinding, nfcLog);
   registerVaultHandlers(nfcBinding, nfcLog);
-  registerSyncHandlers(nfcLog);
+  registerSyncHandlers(nfcLog, { getMachineSecret });
   startBackgroundSyncLoop();
 
   // Start the named-pipe bridge that feeds the browser extension.
@@ -573,6 +585,9 @@ app.on('before-quit', (event) => {
     } finally {
       // Close vault DB gracefully.
       closeVault();
+
+      // Zeroize any locally-unlocked sync vault key.
+      clearUnlockedVaultRootKey();
 
       // Zeroize machine secret before process exits.
       if (machineSecret) {

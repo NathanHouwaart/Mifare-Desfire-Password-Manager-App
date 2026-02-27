@@ -164,6 +164,9 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [syncLogoutBusy, setSyncLogoutBusy] = useState(false);
   const [syncClearBusy, setSyncClearBusy] = useState(false);
   const [syncHydrated, setSyncHydrated] = useState(false);
+  const [vaultKeyStatus, setVaultKeyStatus] = useState<SyncVaultKeyStatusDto | null>(null);
+  const [vaultKeyPassphrase, setVaultKeyPassphrase] = useState('');
+  const [vaultKeyBusy, setVaultKeyBusy] = useState(false);
 
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
@@ -271,8 +274,18 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }
   };
 
+  const refreshVaultKeyStatus = async () => {
+    try {
+      const status = await window.electron['sync:getVaultKeyStatus']();
+      setVaultKeyStatus(status);
+    } catch {
+      setVaultKeyStatus(null);
+    }
+  };
+
   useEffect(() => {
     void refreshSyncStatus(true);
+    void refreshVaultKeyStatus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveSyncConfig = async () => {
@@ -293,6 +306,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncUsername(status.username ?? '');
       setSyncDeviceName(status.deviceName ?? '');
       syncFeedbackFor('ok', 'Sync config saved.');
+      await refreshVaultKeyStatus();
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -320,6 +334,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncPassword('');
       syncFeedbackFor('ok', `Account bootstrapped for ${status.username}.`);
       window.dispatchEvent(new Event('securepass:vault-sync-applied'));
+      await refreshVaultKeyStatus();
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -340,6 +355,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncPassword('');
       syncFeedbackFor('ok', `Logged in as ${status.username}.`);
       window.dispatchEvent(new Event('securepass:vault-sync-applied'));
+      await refreshVaultKeyStatus();
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -358,6 +374,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         `Sync complete. Push ${result.push.sent}/${result.push.applied}, pull ${result.pull.received}/${result.pull.applied}, deleted ${result.pull.deleted}.`
       );
       window.dispatchEvent(new Event('securepass:vault-sync-applied'));
+      await refreshVaultKeyStatus();
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -372,6 +389,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       const status = await window.electron['sync:logout']();
       setSyncStatus(status);
       syncFeedbackFor('ok', 'Sync session logged out.');
+      await refreshVaultKeyStatus();
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -392,10 +410,65 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       setSyncPassword('');
       setSyncBootstrapToken('');
       syncFeedbackFor('ok', 'Sync config and session removed.');
+      setVaultKeyPassphrase('');
+      await refreshVaultKeyStatus();
     } catch (e) {
       syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
     } finally {
       setSyncClearBusy(false);
+    }
+  };
+
+  const handleInitVaultKey = async () => {
+    if (!vaultKeyPassphrase.trim()) {
+      syncFeedbackFor('err', 'Vault key passphrase is required.');
+      return;
+    }
+    setVaultKeyBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:initVaultKey']({ passphrase: vaultKeyPassphrase });
+      setVaultKeyStatus(status);
+      setVaultKeyPassphrase('');
+      syncFeedbackFor('ok', 'Vault key initialized and uploaded.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setVaultKeyBusy(false);
+    }
+  };
+
+  const handleUnlockVaultKey = async () => {
+    if (!vaultKeyPassphrase.trim()) {
+      syncFeedbackFor('err', 'Vault key passphrase is required.');
+      return;
+    }
+    setVaultKeyBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:unlockVaultKey']({ passphrase: vaultKeyPassphrase });
+      setVaultKeyStatus(status);
+      setVaultKeyPassphrase('');
+      syncFeedbackFor('ok', 'Vault key unlocked locally.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setVaultKeyBusy(false);
+    }
+  };
+
+  const handleLockVaultKey = async () => {
+    setVaultKeyBusy(true);
+    setSyncFeedback(null);
+    try {
+      const status = await window.electron['sync:lockVaultKey']();
+      setVaultKeyStatus(status);
+      setVaultKeyPassphrase('');
+      syncFeedbackFor('ok', 'Vault key locked locally.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setVaultKeyBusy(false);
     }
   };
 
@@ -417,7 +490,8 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Retry Attempts', 'Number of times to retry a failed connection'),
     sync:       show('Sync Status', 'Background sync every 2 minutes when logged in')
              || show('Sync URL', 'Username', 'Device Name')
-             || show('Save Config', 'Bootstrap', 'Login', 'Sync Now', 'Logout', 'Reset Sync'),
+             || show('Save Config', 'Bootstrap', 'Login', 'Sync Now', 'Logout', 'Reset Sync')
+             || show('Vault Key', 'Initialize', 'Unlock', 'Lock', 'Passphrase'),
     data:       show('Export Vault', 'Save an encrypted backup of your passwords')
              || show('Import Vault', 'Restore passwords from an encrypted backup')
              || show('App Version', '0.1.0') || show('Stack', 'Electron React C++')
@@ -777,6 +851,66 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                     className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {syncAuthBusy ? 'Working...' : 'Login'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {show('Vault Key', 'Initialize', 'Unlock', 'Lock', 'Passphrase') && (
+              <div className="px-5 py-4 flex flex-col gap-3">
+                <p className="text-[16px] font-medium text-hi">Vault Key (Phase 1)</p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                    vaultKeyStatus?.hasRemoteEnvelope
+                      ? 'text-ok border-ok-edge bg-ok-soft'
+                      : 'text-dim border-edge bg-input'
+                  }`}>
+                    {vaultKeyStatus?.hasRemoteEnvelope ? 'Envelope On Server' : 'No Envelope'}
+                  </span>
+                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                    vaultKeyStatus?.hasLocalUnlockedKey
+                      ? 'text-ok border-ok-edge bg-ok-soft'
+                      : 'text-dim border-edge bg-input'
+                  }`}>
+                    {vaultKeyStatus?.hasLocalUnlockedKey ? 'Locally Unlocked' : 'Locally Locked'}
+                  </span>
+                  {vaultKeyStatus?.keyVersion && (
+                    <span className="text-[12px] px-2 py-1 rounded-lg border text-dim border-edge bg-input">
+                      Key v{vaultKeyStatus.keyVersion}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[13px] text-lo">
+                  Local unlock time: {formatSyncTime(vaultKeyStatus?.unlockedAt)}
+                </p>
+                <input
+                  type="password"
+                  value={vaultKeyPassphrase}
+                  onChange={(e) => setVaultKeyPassphrase(e.target.value)}
+                  placeholder="Vault Key Passphrase"
+                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3 py-2.5 outline-none focus:border-accent-edge"
+                />
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={handleInitVaultKey}
+                    disabled={vaultKeyBusy || !syncStatus?.loggedIn}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {vaultKeyBusy ? 'Working...' : 'Initialize'}
+                  </button>
+                  <button
+                    onClick={handleUnlockVaultKey}
+                    disabled={vaultKeyBusy || !syncStatus?.loggedIn}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {vaultKeyBusy ? 'Working...' : 'Unlock'}
+                  </button>
+                  <button
+                    onClick={handleLockVaultKey}
+                    disabled={vaultKeyBusy}
+                    className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {vaultKeyBusy ? 'Working...' : 'Lock'}
                   </button>
                 </div>
               </div>

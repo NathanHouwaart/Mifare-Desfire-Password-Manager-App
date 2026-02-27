@@ -6,7 +6,7 @@
  *
  * card:peekUid        — lightweight UID probe, null when no card
  * card:isInitialised  — true if vault AID 505700 exists on card
- * card:init           — full 11-step secure init (derives keys from machineSecret + UID)
+ * card:init           — full 11-step secure init (derives keys from active root secret + UID)
  * card:freeMemory     — free EEPROM bytes on the PICC
  * card:format         — FormatPICC + wipe vault DB
  * card:getAids        — list of AIDs on the card
@@ -17,7 +17,7 @@
 import { ipcMain } from 'electron';
 import crypto from 'node:crypto';
 import { NfcCppBinding } from './bindings.js';
-import { getMachineSecret } from './main.js';
+import { getCryptoRootSecret } from './main.js';
 import { deriveCardKey, zeroizeBuffer } from './keyDerivation.js';
 import { wipeVault } from './vault.js';
 import { beginCardWait } from './nfcCancel.js';
@@ -83,11 +83,11 @@ export function registerCardHandlers(
     const uidHex = await waitForCard(nfcBinding, signal);
     log('info', `card:init — card detected (${uidHex}), deriving keys...`);
 
-    const machineSecret = getMachineSecret();
+    const rootSecret = getCryptoRootSecret();
     const uidBuf        = uidToBuffer(uidHex);
 
-    const appMasterKey = deriveCardKey(machineSecret, uidBuf, 0x01);
-    const readKey      = deriveCardKey(machineSecret, uidBuf, 0x02);
+    const appMasterKey = deriveCardKey(rootSecret, uidBuf, 0x01);
+    const readKey      = deriveCardKey(rootSecret, uidBuf, 0x02);
     const cardSecret   = crypto.randomBytes(16);
 
     try {
@@ -103,6 +103,7 @@ export function registerCardHandlers(
       zeroizeBuffer(appMasterKey);
       zeroizeBuffer(readKey);
       zeroizeBuffer(cardSecret);
+      zeroizeBuffer(rootSecret);
     }
   });
 

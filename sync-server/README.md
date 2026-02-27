@@ -2,6 +2,19 @@
 
 Lightweight sync API for SecurePass encrypted vault rows.
 
+## Endpoints
+- `GET /v1/health`
+- `GET /v1/auth/status`
+- `POST /v1/auth/bootstrap`
+- `POST /v1/auth/login`
+- `POST /v1/auth/refresh`
+- `POST /v1/auth/logout`
+- `GET /v1/keys/envelope`
+- `PUT /v1/keys/envelope`
+- `POST /v1/sync/push`
+- `GET /v1/sync/pull`
+- `GET /v1/sync/cursor`
+
 ## Run locally
 1. Install dependencies:
    - `npm install`

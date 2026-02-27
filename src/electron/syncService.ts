@@ -66,6 +66,10 @@ interface SyncPullResponse {
   changes: SyncPullChange[];
 }
 
+interface SyncKeyEnvelopeResponse {
+  envelope: SyncKeyEnvelope | null;
+}
+
 interface TokenResponse {
   userId: string;
   deviceId: string;
@@ -99,6 +103,22 @@ export interface SyncPullResult {
   deleted: number;
   cursor: number;
   hasMore: boolean;
+}
+
+export interface SyncKeyEnvelope {
+  keyVersion: number;
+  kdf: 'scrypt-v1';
+  kdfParams: {
+    N: number;
+    r: number;
+    p: number;
+    dkLen: number;
+  };
+  salt: string;
+  nonce: string;
+  ciphertext: string;
+  authTag: string;
+  updatedAt?: string;
 }
 
 function configPath(): string {
@@ -427,6 +447,24 @@ export async function logoutSync(): Promise<SyncStatus> {
 
   clearSession();
   return makeStatus(config, null);
+}
+
+export async function getSyncKeyEnvelope(): Promise<SyncKeyEnvelope | null> {
+  const config = requireConfig();
+  const response = await requestAuthedJson<SyncKeyEnvelopeResponse>(config, '/v1/keys/envelope');
+  return response.envelope ?? null;
+}
+
+export async function setSyncKeyEnvelope(envelope: SyncKeyEnvelope): Promise<SyncKeyEnvelope> {
+  const config = requireConfig();
+  const response = await requestAuthedJson<SyncKeyEnvelopeResponse>(config, '/v1/keys/envelope', {
+    method: 'PUT',
+    body: JSON.stringify({ envelope }),
+  });
+  if (!response.envelope) {
+    throw new Error('Sync server did not return a key envelope');
+  }
+  return response.envelope;
 }
 
 export async function pushSync(limit = 500): Promise<SyncPushResult> {
