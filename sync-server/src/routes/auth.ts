@@ -40,6 +40,10 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(20),
 });
 
+const userExistsQuerySchema = z.object({
+  username: usernameSchema,
+});
+
 const mfaCodeOnlySchema = z.object({
   code: mfaCodeSchema,
 });
@@ -128,6 +132,21 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
       hasUsers,
       bootstrapped: hasUsers, // Deprecated field kept temporarily for old clients.
     });
+  });
+
+  router.get('/user-exists', async (req, res) => {
+    const parsed = userExistsQuerySchema.safeParse({ username: req.query.username });
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const row = await pool.query<{ exists: boolean }>(
+      `SELECT EXISTS(SELECT 1 FROM users WHERE username = $1) AS exists`,
+      [parsed.data.username]
+    );
+
+    res.status(200).json({ exists: Boolean(row.rows[0]?.exists) });
   });
 
   router.post('/register', async (req, res) => {
