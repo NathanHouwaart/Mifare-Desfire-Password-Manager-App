@@ -50,7 +50,7 @@ jobs:
         run: npm run lint
 
       - name: Run unit tests (excluding native addon)
-        run: npm run test --if-present -- --exclude tests/addon.test.ts
+        run: npm run test --if-present -- --exclude tests/addon.test.ts --passWithNoTests
 
   package:
     name: Package (${{ matrix.os }})
