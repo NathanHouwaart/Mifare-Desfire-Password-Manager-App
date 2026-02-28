@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <array>
+#include <cstdint>
 #include <vector>
 #include <variant>
 #include <functional>
