@@ -48,6 +48,10 @@ const mfaCodeOnlySchema = z.object({
   code: mfaCodeSchema,
 });
 
+const updateCurrentDeviceSchema = z.object({
+  name: deviceNameSchema,
+});
+
 interface NewSession {
   userId: string;
   username: string;
@@ -397,6 +401,112 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
       [tokenHash]
     );
     res.status(204).send();
+  });
+
+  router.get('/devices', requireAccessToken(config), async (req, res) => {
+    const userId = req.auth?.sub;
+    const currentDeviceId = req.auth?.did;
+    if (!userId || !currentDeviceId) {
+      res.status(401).json({ error: 'Missing auth context' });
+      return;
+    }
+
+    const rows = await pool.query<{
+      id: string;
+      name: string;
+      created_at: Date;
+      last_seen_at: Date;
+      active: boolean;
+    }>(
+      `SELECT
+         d.id,
+         d.name,
+         d.created_at,
+         d.last_seen_at,
+         EXISTS(
+           SELECT 1
+           FROM refresh_tokens rt
+           WHERE rt.user_id = d.user_id
+             AND rt.device_id = d.id
+             AND rt.revoked_at IS NULL
+             AND rt.expires_at > now()
+         ) AS active
+       FROM devices d
+       WHERE d.user_id = $1
+       ORDER BY d.last_seen_at DESC, d.created_at DESC`,
+      [userId]
+    );
+
+    res.status(200).json({
+      devices: rows.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at.toISOString(),
+        lastSeenAt: row.last_seen_at.toISOString(),
+        active: Boolean(row.active),
+        isCurrent: row.id === currentDeviceId,
+      })),
+    });
+  });
+
+  router.patch('/devices/current', requireAccessToken(config), async (req, res) => {
+    const userId = req.auth?.sub;
+    const currentDeviceId = req.auth?.did;
+    if (!userId || !currentDeviceId) {
+      res.status(401).json({ error: 'Missing auth context' });
+      return;
+    }
+
+    const parsed = updateCurrentDeviceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const updated = await pool.query<{
+      id: string;
+      name: string;
+      created_at: Date;
+      last_seen_at: Date;
+      active: boolean;
+    }>(
+      `UPDATE devices d
+       SET name = $3,
+           last_seen_at = now()
+       WHERE d.id = $1
+         AND d.user_id = $2
+       RETURNING
+         d.id,
+         d.name,
+         d.created_at,
+         d.last_seen_at,
+         EXISTS(
+           SELECT 1
+           FROM refresh_tokens rt
+           WHERE rt.user_id = d.user_id
+             AND rt.device_id = d.id
+             AND rt.revoked_at IS NULL
+             AND rt.expires_at > now()
+         ) AS active`,
+      [currentDeviceId, userId, parsed.data.name]
+    );
+
+    if (updated.rowCount === 0) {
+      res.status(404).json({ error: 'Current device not found' });
+      return;
+    }
+
+    const row = updated.rows[0];
+    res.status(200).json({
+      device: {
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at.toISOString(),
+        lastSeenAt: row.last_seen_at.toISOString(),
+        active: Boolean(row.active),
+        isCurrent: true,
+      },
+    });
   });
 
   router.get('/mfa/status', requireAccessToken(config), async (req, res) => {
