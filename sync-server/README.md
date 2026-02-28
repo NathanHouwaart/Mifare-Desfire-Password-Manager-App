@@ -4,6 +4,8 @@ Lightweight sync API for SecurePass encrypted vault rows.
 
 ## Endpoints
 - `GET /v1/health`
+- `GET /v1/invite/link`
+- `GET /v1/invite/open`
 - `GET /v1/auth/status`
 - `POST /v1/auth/register`
 - `POST /v1/auth/bootstrap`
@@ -38,6 +40,7 @@ Lightweight sync API for SecurePass encrypted vault rows.
 ## Env variables
 - `HOST` default `0.0.0.0`
 - `PORT` default `8787`
+- `PUBLIC_BASE_URL` optional (used for invite links behind reverse proxies)
 - `DATABASE_URL` required
 - `JWT_ACCESS_SECRET` required (min 32 chars)
 - `JWT_REFRESH_SECRET` required (min 32 chars)

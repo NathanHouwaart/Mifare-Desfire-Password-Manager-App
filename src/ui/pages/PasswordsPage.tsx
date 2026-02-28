@@ -330,12 +330,14 @@ interface PasswordCardProps {
   onEdit:            () => void;
   onDelete:          () => void;
   theme:             'dark' | 'light';
+  highlightRevealAction?: boolean;
 }
 
 const PasswordCard = ({
   entry, decrypted, isRevealed, copiedId, copiedUsernameId, revealCopiedField,
   revealProgress, revealSecsLeft,
   onRevealToggle, onCopyClick, onCopyUsernameClick, onCopyUsername, onCopyPassword, onEdit, onDelete, theme,
+  highlightRevealAction = false,
 }: PasswordCardProps) => (
   <div className="border-b border-edge last:border-b-0 hover:bg-input transition-colors duration-100">
 
@@ -391,12 +393,14 @@ const PasswordCard = ({
           aria-label={isRevealed ? 'Hide password' : 'Show password'}
           aria-pressed={isRevealed}
           title={isRevealed ? 'Hide password' : 'Show password'}
+          data-guide-item="password-reveal"
           className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-100
                       active:scale-90 focus-visible:outline-none focus-visible:ring-2
                       focus-visible:ring-accent-edge
                       ${isRevealed
                         ? 'text-accent bg-accent-soft'
-                        : 'text-mid hover:text-hi hover:bg-well'}`}
+                        : 'text-mid hover:text-hi hover:bg-well'}
+                      ${highlightRevealAction ? 'guide-click-target' : ''}`}
         >
           {isRevealed ? <EyeOff className="w-[17px] h-[17px]" /> : <Eye className="w-[17px] h-[17px]" />}
         </button>
@@ -532,9 +536,13 @@ const PasswordCard = ({
 export const PasswordsPage = ({
   theme = 'dark',
   isActive = false,
+  guideHighlightNewCredential = false,
+  guideHighlightReveal = false,
 }: {
   theme?: 'dark' | 'light';
   isActive?: boolean;
+  guideHighlightNewCredential?: boolean;
+  guideHighlightReveal?: boolean;
 }) => {
   const [entries,        setEntries]        = useState<EntryListItemDto[]>([]);
   const [loading,        setLoading]        = useState(true);
@@ -559,6 +567,9 @@ export const PasswordsPage = ({
     'new' | { entry: EntryListItemDto; decrypted: EntryPayloadDto } | null
   >(null);
   const [deleteTarget, setDeleteTarget] = useState<EntryListItemDto | null>(null);
+  const [showNfcHint, setShowNfcHint] = useState(
+    () => localStorage.getItem('hint-passwords-nfc') !== 'dismissed'
+  );
 
   const cancelRef = useRef(false);
 
@@ -658,6 +669,16 @@ export const PasswordsPage = ({
     return () => window.removeEventListener('securepass:vault-sync-applied', onSynced);
   }, [refreshEntries]);
 
+  // Allow guided onboarding to open the add-credential form without duplicating UI logic.
+  useEffect(() => {
+    const onGuideOpenNewCredential = () => {
+      setTapError(null);
+      setEditTarget('new');
+    };
+    window.addEventListener('securepass:guide-open-new-credential', onGuideOpenNewCredential);
+    return () => window.removeEventListener('securepass:guide-open-new-credential', onGuideOpenNewCredential);
+  }, []);
+
   // ── Reveal toggle ────────────────────────────────────────────────────────
   // Always require a card tap to reveal — even if this entry was previously
   // shown. Hiding clears the decrypted payload so it cannot be re-shown
@@ -673,6 +694,7 @@ export const PasswordsPage = ({
         const payload = await window.electron['vault:getEntry'](entry.id);
         setRevealedPayload(payload);
         setRevealedId(entry.id);
+        window.dispatchEvent(new Event('securepass:guide-credential-revealed'));
       });
     } catch { /* tapError already set */ }
   }, [revealedId, withTap]);
@@ -793,6 +815,7 @@ export const PasswordsPage = ({
         await window.electron['vault:createEntry'](data);
         await refreshEntries();
       });
+      window.dispatchEvent(new Event('securepass:guide-credential-created'));
     } else if (editTarget) {
       const entryId = editTarget.entry.id;
       const data: EntryUpdateDto = {
@@ -938,6 +961,26 @@ export const PasswordsPage = ({
               </button>
             </div>
           )}
+
+          {/* One-time NFC hint for first-time users */}
+          {showNfcHint && entries.length > 0 && (
+            <div className="flex items-start gap-2 mt-3 rounded-xl border border-accent-edge bg-accent-soft p-3">
+              <Shield className="w-4 h-4 text-accent shrink-0 mt-0.5" />
+              <p className="text-[13px] text-mid flex-1">
+                Tip: Use your NFC card to reveal or copy credentials when needed.
+              </p>
+              <button
+                onClick={() => {
+                  setShowNfcHint(false);
+                  localStorage.setItem('hint-passwords-nfc', 'dismissed');
+                }}
+                className="text-accent hover:text-hi shrink-0"
+                aria-label="Dismiss NFC hint"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Table */}
@@ -993,6 +1036,7 @@ export const PasswordsPage = ({
                   onEdit={() => handleEdit(entry)}
                   onDelete={() => setDeleteTarget(entry)}
                   theme={theme}
+                  highlightRevealAction={guideHighlightReveal}
                 />
               ))}
             </div>
@@ -1006,9 +1050,11 @@ export const PasswordsPage = ({
           </p>
           <button
             onClick={() => setEditTarget('new')}
-            className="flex items-center gap-2 px-5 py-2.5 bg-accent-solid hover:bg-accent-hover
+            data-guide-item="password-new"
+            className={`flex items-center gap-2 px-5 py-2.5 bg-accent-solid hover:bg-accent-hover
                        active:scale-95 rounded-2xl text-[15px] font-medium text-white
-                       shadow-lg shadow-accent-soft transition-all duration-150"
+                       shadow-lg shadow-accent-soft transition-all duration-150
+                       ${guideHighlightNewCredential ? 'guide-click-target' : ''}`}
           >
             <Plus className="w-4 h-4" />
             New Credential

@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Components/Sidebar';
 import { LockScreen } from './Components/LockScreen';
 import { SplashScreen } from './Components/SplashScreen';
 import { OnboardingScreen } from './Components/OnboardingScreen';
+import { GettingStartedCoach, type GuideStepId } from './Components/GettingStartedCoach';
 import { LockTransition } from './Components/LockTransition';
 import { DebugTerminal } from './Components/DebugTerminal';
 import { PasswordsPage } from './pages/PasswordsPage';
@@ -13,6 +14,27 @@ import { NfcReaderPage } from './pages/NfcReaderPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AboutPage } from './pages/AboutPage';
 import './App.css';
+
+const PIN_HASH_KEY = 'app-pin-hash';
+const GUIDE_COMPLETE_KEY = 'app-getting-started-complete';
+const GUIDE_DISMISSED_KEY = 'app-getting-started-dismissed';
+const GUIDE_CARD_READY_KEY = 'app-getting-started-card-ready';
+const GUIDE_CREDENTIAL_KEY = 'app-getting-started-credential-ready';
+const GUIDE_REVEAL_KEY = 'app-getting-started-reveal-ready';
+const GUIDE_SKIPPED_STEPS_KEY = 'app-getting-started-skipped-steps';
+
+function loadGuideSkippedSteps(): GuideStepId[] {
+  const validSteps = new Set<GuideStepId>(['sync', 'reader', 'card', 'add', 'reveal']);
+  try {
+    const raw = localStorage.getItem(GUIDE_SKIPPED_STEPS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((step): step is GuideStepId => typeof step === 'string' && validSteps.has(step as GuideStepId));
+  } catch {
+    return [];
+  }
+}
 
 function App() {
   const location  = useLocation();
@@ -27,19 +49,134 @@ function App() {
     () => localStorage.getItem('app-onboarding-complete') !== '1'
   );
   const [onboardingInitialMode, setOnboardingInitialMode] = useState<'local' | 'synced' | null>(null);
+  const [syncInvitePrefill, setSyncInvitePrefill] = useState<SyncInvitePayloadDto | null>(null);
+  const [pendingSyncInvite, setPendingSyncInvite] = useState<SyncInvitePayloadDto | null>(null);
   const [showSyncModal,    setShowSyncModal]     = useState(false);
   const [isTerminalOpen,   setIsTerminalOpen]    = useState(false);
   const [isNfcConnected,   setIsNfcConnected]    = useState(false);
+  const [needsPinSetup,    setNeedsPinSetup]     = useState(
+    () => localStorage.getItem('app-onboarding-complete') === '1' && !localStorage.getItem(PIN_HASH_KEY)
+  );
   const [terminalEnabled,  setTerminalEnabled]   = useState(
     () => (localStorage.getItem('setting-terminal-enabled') ?? 'true') === 'true'
   );
   const [theme, setTheme] = useState<'dark' | 'light'>(
     () => (localStorage.getItem('app-theme') as 'dark' | 'light') ?? 'dark'
   );
+  const [syncMode, setSyncMode] = useState<'local' | 'synced'>(
+    () => (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local'
+  );
+  const [guideActive, setGuideActive] = useState(
+    () => localStorage.getItem(GUIDE_COMPLETE_KEY) !== '1' && localStorage.getItem(GUIDE_DISMISSED_KEY) !== '1'
+  );
+  const [guideHiddenForNow, setGuideHiddenForNow] = useState(false);
+  const [guideSyncReady, setGuideSyncReady] = useState(
+    () => ((localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local') === 'local'
+  );
+  const [guideCardReady, setGuideCardReady] = useState(
+    () => localStorage.getItem(GUIDE_CARD_READY_KEY) === '1'
+  );
+  const [guideHasCredential, setGuideHasCredential] = useState(
+    () => localStorage.getItem(GUIDE_CREDENTIAL_KEY) === '1'
+  );
+  const [guideHasReveal, setGuideHasReveal] = useState(
+    () => localStorage.getItem(GUIDE_REVEAL_KEY) === '1'
+  );
+  const [guideSkippedSteps, setGuideSkippedSteps] = useState<GuideStepId[]>(() => loadGuideSkippedSteps());
+  const [guideCurrentStep, setGuideCurrentStep] = useState<GuideStepId | null>(null);
 
   // Track whether the window was blurred so the focus handler only acts on
   // a real wake-from-background, not the initial focus on startup.
   const wasBlurred = useRef(false);
+  const syncModalRef = useRef<HTMLDivElement | null>(null);
+
+  const closeSyncModal = useCallback(() => {
+    setShowSyncModal(false);
+    setOnboardingInitialMode(null);
+    setSyncInvitePrefill(null);
+  }, []);
+
+  const openSyncWizard = useCallback((options?: {
+    mode?: 'local' | 'synced' | null;
+    invite?: SyncInvitePayloadDto | null;
+  }) => {
+    const currentMode = (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local';
+    const nextMode = options?.mode ?? (currentMode === 'synced' ? 'synced' : null);
+    setOnboardingInitialMode(nextMode);
+    setSyncInvitePrefill(options?.invite ?? null);
+    setShowSyncModal(true);
+  }, []);
+
+  const handleSyncInvite = useCallback((invite: SyncInvitePayloadDto) => {
+    if (needsOnboarding) {
+      setOnboardingInitialMode('synced');
+      setSyncInvitePrefill(invite);
+      return;
+    }
+
+    if (!unlocked) {
+      setPendingSyncInvite(invite);
+      return;
+    }
+
+    openSyncWizard({ mode: 'synced', invite });
+  }, [needsOnboarding, openSyncWizard, unlocked]);
+
+  const refreshGuideSyncStatus = useCallback(async () => {
+    const currentMode = (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local';
+    setSyncMode(currentMode);
+    if (currentMode === 'local') {
+      setGuideSyncReady(true);
+      return;
+    }
+    try {
+      const status = await window.electron['sync:getStatus']();
+      setGuideSyncReady(Boolean(status.configured && status.loggedIn));
+    } catch {
+      setGuideSyncReady(false);
+    }
+  }, []);
+
+  const refreshGuideCredentialStatus = useCallback(async () => {
+    try {
+      const list = await window.electron['vault:listEntries']();
+      const hasCredential = list.length > 0;
+      setGuideHasCredential(hasCredential);
+      if (hasCredential) {
+        localStorage.setItem(GUIDE_CREDENTIAL_KEY, '1');
+      }
+    } catch {
+      // Ignore guide refresh errors and keep current state.
+    }
+  }, []);
+
+  const persistGuideSkippedSteps = useCallback((steps: GuideStepId[]) => {
+    localStorage.setItem(GUIDE_SKIPPED_STEPS_KEY, JSON.stringify(steps));
+  }, []);
+
+  const skipGuideStep = useCallback((stepId: GuideStepId) => {
+    setGuideSkippedSteps((current) => {
+      if (current.includes(stepId)) return current;
+      const next = [...current, stepId];
+      persistGuideSkippedSteps(next);
+      return next;
+    });
+  }, [persistGuideSkippedSteps]);
+
+  const finishGuide = useCallback(() => {
+    localStorage.setItem(GUIDE_COMPLETE_KEY, '1');
+    localStorage.removeItem(GUIDE_DISMISSED_KEY);
+    localStorage.removeItem(GUIDE_SKIPPED_STEPS_KEY);
+    setGuideSkippedSteps([]);
+    setGuideActive(false);
+    setGuideHiddenForNow(false);
+  }, []);
+
+  const dismissGuide = useCallback(() => {
+    localStorage.setItem(GUIDE_DISMISSED_KEY, '1');
+    setGuideActive(false);
+    setGuideHiddenForNow(false);
+  }, []);
 
   const toggleTerminalEnabled = () =>
     setTerminalEnabled(prev => {
@@ -63,7 +200,7 @@ function App() {
     const onFocus = () => {
       if (!wasBlurred.current) return;
       wasBlurred.current = false;
-      const requirePin = (localStorage.getItem('setting-pin-wake') ?? 'true') === 'true';
+      const requirePin = (localStorage.getItem('setting-pin-wake') ?? 'false') === 'true';
       if (requirePin) setLocking(true);
     };
     window.addEventListener('blur',  onBlur);
@@ -75,10 +212,44 @@ function App() {
   }, [unlocked]);
 
   useEffect(() => {
+    let unsub: (() => void) | undefined;
+
+    const consumeStartupInvite = async () => {
+      try {
+        const startupInvite = await window.electron['sync:consumeInvite']();
+        if (startupInvite) {
+          handleSyncInvite(startupInvite);
+        }
+      } catch {
+        // Ignore invite startup failures.
+      }
+    };
+
+    void consumeStartupInvite();
+    unsub = window.electron.onSyncInvite((invite) => {
+      handleSyncInvite(invite);
+    });
+
+    return () => {
+      unsub?.();
+    };
+  }, [handleSyncInvite]);
+
+  useEffect(() => {
+    if (!pendingSyncInvite) return;
+    if (needsOnboarding) return;
+    if (!unlocked) return;
+    openSyncWizard({ mode: 'synced', invite: pendingSyncInvite });
+    setPendingSyncInvite(null);
+  }, [needsOnboarding, openSyncWizard, pendingSyncInvite, unlocked]);
+
+  useEffect(() => {
     const onOpenSyncWizard = (event: Event) => {
-      const detail = (event as CustomEvent<{ mode?: 'local' | 'synced' }>).detail;
+      const detail = (event as CustomEvent<{ mode?: 'local' | 'synced'; invite?: SyncInvitePayloadDto | null }>).detail;
       const mode = detail?.mode === 'local' || detail?.mode === 'synced' ? detail.mode : null;
+      const invite = detail?.invite ?? null;
       setOnboardingInitialMode(mode);
+      setSyncInvitePrefill(invite);
       setShowSyncModal(true);
     };
 
@@ -87,6 +258,115 @@ function App() {
       window.removeEventListener('securepass:open-sync-wizard', onOpenSyncWizard);
     };
   }, []);
+
+  useEffect(() => {
+    const onSyncModeChanged = () => {
+      void refreshGuideSyncStatus();
+    };
+    const onVaultSyncApplied = () => {
+      void refreshGuideSyncStatus();
+      void refreshGuideCredentialStatus();
+    };
+    const onGuideCardReady = () => {
+      localStorage.setItem(GUIDE_CARD_READY_KEY, '1');
+      setGuideCardReady(true);
+    };
+    const onGuideCredential = () => {
+      localStorage.setItem(GUIDE_CREDENTIAL_KEY, '1');
+      setGuideHasCredential(true);
+    };
+    const onGuideReveal = () => {
+      localStorage.setItem(GUIDE_REVEAL_KEY, '1');
+      setGuideHasReveal(true);
+    };
+
+    window.addEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+    window.addEventListener('securepass:vault-sync-applied', onVaultSyncApplied);
+    window.addEventListener('securepass:guide-card-initialized', onGuideCardReady);
+    window.addEventListener('securepass:guide-credential-created', onGuideCredential);
+    window.addEventListener('securepass:guide-credential-revealed', onGuideReveal);
+
+    return () => {
+      window.removeEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+      window.removeEventListener('securepass:vault-sync-applied', onVaultSyncApplied);
+      window.removeEventListener('securepass:guide-card-initialized', onGuideCardReady);
+      window.removeEventListener('securepass:guide-credential-created', onGuideCredential);
+      window.removeEventListener('securepass:guide-credential-revealed', onGuideReveal);
+    };
+  }, [refreshGuideCredentialStatus, refreshGuideSyncStatus]);
+
+  useEffect(() => {
+    if (!guideActive) return;
+    if (!unlocked) return;
+    void refreshGuideSyncStatus();
+    void refreshGuideCredentialStatus();
+  }, [guideActive, refreshGuideCredentialStatus, refreshGuideSyncStatus, unlocked]);
+
+  useEffect(() => {
+    if (unlocked) return;
+    setGuideHiddenForNow(false);
+  }, [unlocked]);
+
+  useEffect(() => {
+    if (!guideActive || guideHiddenForNow || !unlocked) {
+      setGuideCurrentStep(null);
+    }
+  }, [guideActive, guideHiddenForNow, unlocked]);
+
+  useEffect(() => {
+    if (!showSyncModal) return;
+
+    const getFocusable = () => {
+      const root = syncModalRef.current;
+      if (!root) return [] as HTMLElement[];
+      return Array.from(root.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      ));
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSyncModal();
+        return;
+      }
+
+      if (event.key !== 'Tab') return;
+      const focusable = getFocusable();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+
+      if (event.shiftKey) {
+        if (!active || !syncModalRef.current?.contains(active) || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+
+      if (active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    const focusId = requestAnimationFrame(() => {
+      const focusable = getFocusable();
+      focusable[0]?.focus();
+    });
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      cancelAnimationFrame(focusId);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [closeSyncModal, showSyncModal]);
 
   // ── Auto-lock on inactivity ──────────────────────────────────────────────
   // Reads the current value from localStorage each time the vault is unlocked
@@ -148,6 +428,14 @@ function App() {
     });
 
   const themeClass = theme === 'light' ? 'light' : '';
+  const highlightSync = guideCurrentStep === 'sync';
+  const highlightReaderNav = guideCurrentStep === 'reader' && path !== '/nfc';
+  const highlightReaderConnect = guideCurrentStep === 'reader' && path === '/nfc';
+  const highlightCardNav = guideCurrentStep === 'card' && path !== '/card';
+  const highlightCardInit = guideCurrentStep === 'card' && path === '/card';
+  const highlightPasswordsNav = (guideCurrentStep === 'add' || guideCurrentStep === 'reveal') && path !== '/passwords';
+  const highlightPasswordAdd = guideCurrentStep === 'add' && path === '/passwords';
+  const highlightPasswordReveal = guideCurrentStep === 'reveal' && path === '/passwords';
 
   if (showSplash) {
     return (
@@ -162,12 +450,23 @@ function App() {
     return (
       <div className={`h-screen w-screen bg-page ${themeClass}`}>
         <OnboardingScreen
-          initialMode={null}
+          initialMode={onboardingInitialMode}
+          initialSyncConfig={syncInvitePrefill}
+          showGuideIntro={guideActive}
+          onSkipGuideIntro={dismissGuide}
           onComplete={(mode) => {
             localStorage.setItem('app-onboarding-complete', '1');
             localStorage.setItem('setting-sync-mode', mode);
             window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode } }));
+            setSyncMode(mode);
             setNeedsOnboarding(false);
+            const hasPin = Boolean(localStorage.getItem(PIN_HASH_KEY));
+            if (!hasPin) {
+              localStorage.removeItem('app-pin-setup-intro-seen');
+            }
+            setNeedsPinSetup(!hasPin);
+            setOnboardingInitialMode(null);
+            setSyncInvitePrefill(null);
           }}
         />
       </div>
@@ -179,7 +478,13 @@ function App() {
 
       {/* Lock screen — shown when vault is locked */}
       {!unlocked && (
-        <LockScreen onUnlock={() => setUnlocked(true)} />
+        <LockScreen
+          mode={needsPinSetup ? 'setup' : 'auto'}
+          onUnlock={() => {
+            setNeedsPinSetup(false);
+            setUnlocked(true);
+          }}
+        />
       )}
 
       {/* Main app — shown when vault is unlocked */}
@@ -191,7 +496,11 @@ function App() {
           <Sidebar
             onLock={() => setLocking(true)}
             isNfcConnected={isNfcConnected}
-            onOpenSync={() => setShowSyncModal(true)}
+            onOpenSync={openSyncWizard}
+            highlightSync={highlightSync}
+            highlightNfcNav={highlightReaderNav}
+            highlightCardNav={highlightCardNav}
+            highlightPasswordsNav={highlightPasswordsNav}
           />
 
           {/* flex-col wrapper so the terminal sits in flow — main shrinks as terminal grows */}
@@ -199,13 +508,21 @@ function App() {
             <main className="flex-1 overflow-y-auto min-h-0 relative">
               {/* All pages are always mounted — CSS hidden preserves state on tab switch */}
               <div className={path === '/passwords' ? 'flex flex-col h-full' : 'hidden'}>
-                <PasswordsPage theme={theme} isActive={path === '/passwords'} />
+                <PasswordsPage
+                  theme={theme}
+                  isActive={path === '/passwords'}
+                  guideHighlightNewCredential={highlightPasswordAdd}
+                  guideHighlightReveal={highlightPasswordReveal}
+                />
               </div>
               <div className={path === '/generator' ? 'block' : 'hidden'}>
                 <GeneratorPage />
               </div>
               <div className={path === '/card' ? 'block' : 'hidden'}>
-                <CardPage isNfcConnected={isNfcConnected} />
+                <CardPage
+                  isNfcConnected={isNfcConnected}
+                  highlightInitAction={highlightCardInit}
+                />
               </div>
               <div className={path === '/nfc' ? 'block' : 'hidden'}>
                 <NfcReaderPage
@@ -214,6 +531,7 @@ function App() {
                   isConnected={isNfcConnected}
                   onConnectionChange={setIsNfcConnected}
                   terminalEnabled={terminalEnabled}
+                  highlightConnect={highlightReaderConnect}
                 />
               </div>
               <div className={path === '/settings' ? 'block' : 'hidden'}>
@@ -236,21 +554,61 @@ function App() {
         </div>
       )}
 
+      {unlocked && guideActive && !guideHiddenForNow && !showSyncModal && (
+        <GettingStartedCoach
+          open
+          path={path}
+          syncMode={syncMode}
+          syncReady={guideSyncReady}
+          nfcConnected={isNfcConnected}
+          cardReady={guideCardReady}
+          hasCredential={guideHasCredential}
+          hasReveal={guideHasReveal}
+          skippedSteps={guideSkippedSteps}
+          onHideForNow={() => setGuideHiddenForNow(true)}
+          onSkipGuide={dismissGuide}
+          onSkipStep={skipGuideStep}
+          onFinishGuide={finishGuide}
+          onOpenSyncSettings={openSyncWizard}
+          onNavigate={(nextPath) => navigate(nextPath)}
+          onOpenNewCredential={() => {
+            navigate('/passwords');
+            window.setTimeout(() => {
+              window.dispatchEvent(new Event('securepass:guide-open-new-credential'));
+            }, 80);
+          }}
+          onCurrentStepChange={setGuideCurrentStep}
+        />
+      )}
+
+      {unlocked && guideActive && guideHiddenForNow && !showSyncModal && (
+        <div className="fixed bottom-4 right-4 z-30">
+          <button
+            onClick={() => setGuideHiddenForNow(false)}
+            className="px-3 py-2 rounded-xl border border-accent-edge bg-accent-soft text-[13px] font-medium text-accent hover:opacity-90 active:scale-95 transition-all duration-100"
+          >
+            Resume Setup Guide
+          </button>
+        </div>
+      )}
+
       {/* Sync setup modal — accessible from the sidebar Cloud button */}
       {showSyncModal && (
         <div
+          ref={syncModalRef}
           className="fixed inset-0 z-40 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm"
-          onClick={(e) => { if (e.target === e.currentTarget) setShowSyncModal(false); }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeSyncModal(); }}
         >
           <OnboardingScreen
             asModal
             initialMode={onboardingInitialMode}
-            onCancel={() => { setShowSyncModal(false); setOnboardingInitialMode(null); }}
+            initialSyncConfig={syncInvitePrefill}
+            onCancel={closeSyncModal}
             onComplete={(mode) => {
               localStorage.setItem('setting-sync-mode', mode);
               window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode } }));
-              setShowSyncModal(false);
-              setOnboardingInitialMode(null);
+              setSyncMode(mode);
+              closeSyncModal();
             }}
           />
         </div>

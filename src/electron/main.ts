@@ -35,9 +35,11 @@ let shutdownInProgress = false;
 const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twice from 100%
 const ZOOM_SHORTCUT_KEYS = new Set(['+', '=', '-', '_', '0', 'Add', 'Subtract', 'NumpadAdd', 'NumpadSubtract']);
 const AUTO_SYNC_INTERVAL_MS = 2 * 60 * 1000;
+const APP_PROTOCOL_SCHEME = 'securepass';
 
 let autoSyncTimer: NodeJS.Timeout | null = null;
 let autoSyncRunning = false;
+let pendingSyncInvite: SyncInvitePayloadDto | null = null;
 
 if (process.platform === 'win32') {
   // Keep taskbar grouping/icon tied to our explicit app identity.
@@ -50,6 +52,117 @@ if (process.platform === 'win32') {
  * an HMR reload without the underlying serial port ever closing.
  */
 let connectedPort: string | null = null;
+
+function normalizeInviteBaseUrl(raw: string): string | null {
+  try {
+    const parsed = new URL(raw.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    const trimmedPath = parsed.pathname.endsWith('/') && parsed.pathname !== '/'
+      ? parsed.pathname.slice(0, -1)
+      : parsed.pathname;
+    parsed.pathname = trimmedPath;
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function parseSyncInviteUrl(url: string): SyncInvitePayloadDto | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== `${APP_PROTOCOL_SCHEME}:`) return null;
+
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    const isInviteRoute =
+      host === 'invite' ||
+      host === 'sync-invite' ||
+      pathname === '/invite' ||
+      pathname === '/sync-invite';
+    if (!isInviteRoute) return null;
+
+    const serverParam =
+      parsed.searchParams.get('server') ??
+      parsed.searchParams.get('baseUrl') ??
+      parsed.searchParams.get('url');
+    if (!serverParam) return null;
+
+    const normalizedBaseUrl = normalizeInviteBaseUrl(serverParam);
+    if (!normalizedBaseUrl) return null;
+
+    const username = parsed.searchParams.get('username')?.trim();
+    return {
+      baseUrl: normalizedBaseUrl,
+      username: username && username.length > 0 ? username : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSyncInviteFromArgv(argv: readonly string[]): SyncInvitePayloadDto | null {
+  for (const token of argv) {
+    if (!token.toLowerCase().startsWith(`${APP_PROTOCOL_SCHEME}://`)) continue;
+    const invite = parseSyncInviteUrl(token);
+    if (invite) return invite;
+  }
+  return null;
+}
+
+function publishSyncInvite(invite: SyncInvitePayloadDto): void {
+  pendingSyncInvite = invite;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('securepass:syncInvite', invite);
+}
+
+function registerProtocolClient(): void {
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(APP_PROTOCOL_SCHEME, process.execPath, [path.resolve(process.argv[1])]);
+      return;
+    }
+    app.setAsDefaultProtocolClient(APP_PROTOCOL_SCHEME);
+  } catch (error) {
+    console.warn(`[invite] Failed to register ${APP_PROTOCOL_SCHEME}:// protocol`, error);
+  }
+}
+
+const startupInvite = parseSyncInviteFromArgv(process.argv);
+if (startupInvite) {
+  pendingSyncInvite = startupInvite;
+}
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const invite = parseSyncInviteFromArgv(argv);
+    if (invite) {
+      publishSyncInvite(invite);
+    }
+
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const invite = parseSyncInviteUrl(url);
+  if (!invite) return;
+  publishSyncInvite(invite);
+
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+});
 
 // ── Machine secret ────────────────────────────────────────────────────────────
 
@@ -251,8 +364,15 @@ async function closeBridgeServer(
   });
 }
 
+ipcMain.handle('sync:consumeInvite', (): SyncInvitePayloadDto | null => {
+  const next = pendingSyncInvite;
+  pendingSyncInvite = null;
+  return next;
+});
+
 app.on('ready', () => {
   console.log('[MAIN.TS] App ready event fired');
+  registerProtocolClient();
 
   // Initialise machine secret (fail-closed if safeStorage unavailable).
   initMachineSecret();
@@ -365,7 +485,12 @@ app.on('ready', () => {
   });
 
   // Re-apply on lifecycle events that can indirectly alter effective zoom.
-  mainWindow.webContents.on('did-finish-load', () => applyLockedZoom(mainWindow));
+  mainWindow.webContents.on('did-finish-load', () => {
+    applyLockedZoom(mainWindow);
+    if (pendingSyncInvite) {
+      mainWindow?.webContents.send('securepass:syncInvite', pendingSyncInvite);
+    }
+  });
   mainWindow.webContents.on('did-navigate-in-page', () => applyLockedZoom(mainWindow));
   mainWindow.webContents.on('zoom-changed', () => applyLockedZoom(mainWindow));
   mainWindow.on('focus', () => applyLockedZoom(mainWindow));

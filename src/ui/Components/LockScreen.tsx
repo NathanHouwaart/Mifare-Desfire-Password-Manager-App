@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Delete, ShieldCheck } from 'lucide-react';
 
 const PIN_HASH_KEY = 'app-pin-hash';
+const PIN_SETUP_INTRO_SEEN_KEY = 'app-pin-setup-intro-seen';
 const PIN_LENGTH = 6;
 const NUMBER_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 
@@ -14,12 +15,12 @@ async function sha256(text: string): Promise<string> {
 
 interface LockScreenProps {
   onUnlock: () => void;
+  mode?: 'auto' | 'setup' | 'unlock';
 }
 
-export const LockScreen = ({ onUnlock }: LockScreenProps) => {
+export const LockScreen = ({ onUnlock, mode = 'auto' }: LockScreenProps) => {
   const [storedHash] = useState(() => localStorage.getItem(PIN_HASH_KEY));
-  const isSettingPin = !storedHash;
-  const [syncStatus, setSyncStatus] = useState<SyncStatusDto | null>(null);
+  const isSettingPin = mode === 'setup' || (mode === 'auto' && !storedHash);
 
   const [phase, setPhase] = useState<'enter' | 'confirm'>('enter');
   const [pin, setPin] = useState('');
@@ -29,36 +30,26 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
   const [mounted, setMounted] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
   const [clock, setClock] = useState(() => new Date());
+  const [showPinSetupIntro, setShowPinSetupIntro] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    const refreshSyncStatus = async () => {
-      try {
-        const status = await window.electron['sync:getStatus']();
-        setSyncStatus(status);
-      } catch {
-        setSyncStatus(null);
-      }
-    };
-    void refreshSyncStatus();
-
-    const onSyncModeChanged = () => {
-      void refreshSyncStatus();
-    };
-    window.addEventListener('securepass:sync-mode-changed', onSyncModeChanged);
-    return () => {
-      window.removeEventListener('securepass:sync-mode-changed', onSyncModeChanged);
-    };
-  }, []);
 
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
     return () => cancelAnimationFrame(id);
   }, []);
+
+  useEffect(() => {
+    if (mode !== 'setup' || !isSettingPin) {
+      setShowPinSetupIntro(false);
+      return;
+    }
+    setShowPinSetupIntro(localStorage.getItem(PIN_SETUP_INTRO_SEEN_KEY) !== '1');
+  }, [isSettingPin, mode]);
 
   const triggerShake = useCallback((message: string) => {
     setError(message);
@@ -88,18 +79,18 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
       } else {
         setPhase('enter');
         setFirstPin('');
-        triggerShake('PINs do not match - try again');
+        triggerShake("Those didn't match - start again");
       }
       return;
     }
 
     const hash = await sha256(entered);
     if (hash === storedHash) finishUnlock();
-    else triggerShake('Incorrect PIN');
+    else triggerShake('Incorrect PIN - try again');
   }, [finishUnlock, firstPin, isSettingPin, phase, storedHash, triggerShake]);
 
   const handleDigit = useCallback((digit: string) => {
-    if (unlocking) return;
+    if (unlocking || showPinSetupIntro) return;
     setError('');
     setPin((current) => {
       if (current.length >= PIN_LENGTH) return current;
@@ -107,13 +98,13 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
       if (next.length === PIN_LENGTH) void handleComplete(next);
       return next;
     });
-  }, [handleComplete, unlocking]);
+  }, [handleComplete, showPinSetupIntro, unlocking]);
 
   const handleBackspace = useCallback(() => {
-    if (unlocking) return;
+    if (unlocking || showPinSetupIntro) return;
     setError('');
     setPin((value) => value.slice(0, -1));
-  }, [unlocking]);
+  }, [showPinSetupIntro, unlocking]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -134,21 +125,21 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
   }, [handleBackspace, handleDigit]);
 
   const title = isSettingPin
-    ? (phase === 'enter' ? 'Set a PIN' : 'Confirm PIN')
-    : 'Enter PIN';
+    ? (showPinSetupIntro
+      ? 'Security setup: unlock PIN'
+      : phase === 'enter' ? 'Create your unlock PIN' : 'Re-enter your PIN to confirm')
+    : 'Enter your unlock PIN';
 
   const subtitle = isSettingPin
-    ? (phase === 'enter'
-      ? 'Choose a 6-digit PIN to secure your vault.'
-      : 'Enter your PIN again to finish setup.')
-    : 'Enter your 6-digit PIN to unlock the vault.';
-
-  const syncCtaLabel = syncStatus?.configured
-    ? (syncStatus.loggedIn ? 'Change Sync Account' : 'Login To Sync')
-    : 'Setup Synced Account';
+    ? (showPinSetupIntro
+      ? 'Before you can open SecurePass, create a 6-digit PIN for this computer.'
+      : phase === 'enter'
+      ? 'Step 1 of 2 - choose 6 digits that only you know.'
+      : 'Step 2 of 2 - re-enter the same 6 digits to finish setup.')
+    : 'Enter your 6-digit PIN to unlock SecurePass.';
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-page">
+    <div role="main" className="relative h-screen w-screen overflow-hidden bg-page">
       <div
         className="pointer-events-none absolute inset-0"
         style={{
@@ -221,42 +212,63 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
               </div>
             </div>
 
-            <div className="px-6 pb-6 pt-5">
-              <div className="mb-3 flex items-center justify-center gap-2.5">
-                {Array.from({ length: PIN_LENGTH }).map((_, index) => (
-                  <div
-                    key={index}
-                    className={`rounded-full transition-all duration-150 ${
-                      index < pin.length
-                        ? 'h-3.5 w-3.5 scale-110 bg-accent'
-                        : 'h-3 w-3 border border-edge bg-input'
-                    }`}
-                  />
-                ))}
-              </div>
-
-              <div className="mb-3 h-5 text-center">
-                {error && <p className="text-[14px] text-err">{error}</p>}
-              </div>
-
-              {!unlocking && (
-                <div className="mb-4 flex justify-center">
-                  <button
-                    onClick={() => {
-                      window.dispatchEvent(new CustomEvent('securepass:open-sync-wizard', { detail: { mode: 'synced' } }));
-                    }}
-                    className="px-3 py-2 rounded-lg text-[12px] font-medium border text-lo border-edge bg-input hover:opacity-90 transition-all duration-100"
-                  >
-                    {syncCtaLabel}
-                  </button>
+            {isSettingPin && showPinSetupIntro ? (
+              <div className="px-6 pb-6 pt-5">
+                <div className="rounded-2xl border border-accent-edge bg-accent-soft p-4 text-left">
+                  <p className="text-[13px] text-mid">
+                    This PIN unlocks the app. You will type it each time SecurePass opens.
+                  </p>
+                  <p className="mt-2 text-[12px] text-lo">
+                    No reader or card setup is needed here. You can change this PIN later in Settings.
+                  </p>
                 </div>
-              )}
+                <button
+                  onClick={() => {
+                    localStorage.setItem(PIN_SETUP_INTRO_SEEN_KEY, '1');
+                    setShowPinSetupIntro(false);
+                  }}
+                  className="mt-4 w-full rounded-xl border border-accent-edge bg-accent-soft px-4 py-3 text-[16px] font-medium text-accent transition-all duration-100 hover:opacity-90 active:scale-[0.98]"
+                >
+                  Start PIN Setup
+                </button>
+              </div>
+            ) : (
+              <div className="px-6 pb-6 pt-5">
+                <div className="mb-3 flex items-center justify-center gap-2.5">
+                  {Array.from({ length: PIN_LENGTH }).map((_, index) => (
+                    <div
+                      key={index}
+                      className={`rounded-full transition-all duration-150 ${
+                        index < pin.length
+                          ? 'h-3.5 w-3.5 scale-110 bg-accent'
+                          : 'h-3 w-3 border border-edge bg-input'
+                      }`}
+                    />
+                  ))}
+                </div>
 
-              <div className="mx-auto grid w-full max-w-[260px] grid-cols-3 gap-2.5">
-                {NUMBER_KEYS.map((digit) => (
+                <div className="mb-3 h-5 text-center">
+                  {error && <p className="text-[14px] text-err">{error}</p>}
+                </div>
+
+                <div className="mx-auto grid w-full max-w-[260px] grid-cols-3 gap-2.5">
+                  {NUMBER_KEYS.map((digit) => (
+                    <button
+                      key={digit}
+                      onClick={() => handleDigit(digit)}
+                      disabled={unlocking}
+                      className="aspect-square w-full rounded-xl border border-edge bg-well text-[22px] font-medium text-hi
+                                 transition-all duration-100 select-none
+                                 hover:scale-[1.02] hover:border-edge2 hover:bg-input
+                                 active:scale-[0.96] active:bg-input
+                                 disabled:opacity-40"
+                    >
+                      {digit}
+                    </button>
+                  ))}
+                  <div />
                   <button
-                    key={digit}
-                    onClick={() => handleDigit(digit)}
+                    onClick={() => handleDigit('0')}
                     disabled={unlocking}
                     className="aspect-square w-full rounded-xl border border-edge bg-well text-[22px] font-medium text-hi
                                transition-all duration-100 select-none
@@ -264,35 +276,23 @@ export const LockScreen = ({ onUnlock }: LockScreenProps) => {
                                active:scale-[0.96] active:bg-input
                                disabled:opacity-40"
                   >
-                    {digit}
+                    0
                   </button>
-                ))}
-                <div />
-                <button
-                  onClick={() => handleDigit('0')}
-                  disabled={unlocking}
-                  className="aspect-square w-full rounded-xl border border-edge bg-well text-[22px] font-medium text-hi
-                             transition-all duration-100 select-none
-                             hover:scale-[1.02] hover:border-edge2 hover:bg-input
-                             active:scale-[0.96] active:bg-input
-                             disabled:opacity-40"
-                >
-                  0
-                </button>
-                <button
-                  onClick={handleBackspace}
-                  disabled={unlocking}
-                  aria-label="Delete digit"
-                  className="flex aspect-square w-full items-center justify-center rounded-xl border border-edge bg-well text-lo
-                             transition-all duration-100 select-none
-                             hover:scale-[1.02] hover:border-edge2 hover:bg-input hover:text-bright
-                             active:scale-[0.96] active:bg-input
-                             disabled:opacity-40"
-                >
-                  <Delete className="h-5 w-5" />
-                </button>
+                  <button
+                    onClick={handleBackspace}
+                    disabled={unlocking}
+                    aria-label="Delete digit"
+                    className="flex aspect-square w-full items-center justify-center rounded-xl border border-edge bg-well text-lo
+                               transition-all duration-100 select-none
+                               hover:scale-[1.02] hover:border-edge2 hover:bg-input hover:text-bright
+                               active:scale-[0.96] active:bg-input
+                               disabled:opacity-40"
+                  >
+                    <Delete className="h-5 w-5" />
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="border-t border-edge/80 px-6 py-3">
               <p className="text-center text-[11px] text-dim">v0.1.0 - Secured by MIFARE DESFire EV2</p>

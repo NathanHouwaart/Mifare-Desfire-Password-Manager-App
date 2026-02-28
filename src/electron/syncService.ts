@@ -13,6 +13,7 @@ import {
   seedOutboxFromEntries,
   setSyncStateValue,
   SyncEntryRow,
+  wipeVault,
 } from './vault.js';
 
 const SYNC_CONFIG_FILE = 'sync-config.json';
@@ -22,6 +23,7 @@ const LAST_SYNC_AT_KEY = 'sync_last_at';
 const LAST_SYNC_ATTEMPT_AT_KEY = 'sync_last_attempt_at';
 const LAST_SYNC_ERROR_KEY = 'sync_last_error';
 const INITIAL_SEED_DONE_KEY = 'sync_initial_seed_done';
+const ACTIVE_USER_ID_KEY = 'sync_active_user_id';
 
 let activeSyncRun: Promise<{ push: SyncPushResult; pull: SyncPullResult }> | null = null;
 
@@ -95,6 +97,10 @@ interface SyncMfaSetupResponse {
   accountName: string;
   secret: string;
   otpauthUrl: string;
+}
+
+interface SyncUserExistsResponse {
+  exists: boolean;
 }
 
 export interface SyncStatus {
@@ -295,6 +301,27 @@ function clearSyncTelemetry(): void {
   setSyncStateValue(INITIAL_SEED_DONE_KEY, '');
 }
 
+function getActiveSyncUserId(): string | null {
+  const value = getSyncStateValue(ACTIVE_USER_ID_KEY);
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function setActiveSyncUserId(userId: string | null): void {
+  setSyncStateValue(ACTIVE_USER_ID_KEY, userId ?? '');
+}
+
+function prepareLocalVaultForUser(userId: string): void {
+  const previousUserId = getActiveSyncUserId();
+  if (previousUserId && previousUserId !== userId) {
+    // Different account on this device: wipe local vault and reset sync cursor state.
+    wipeVault();
+    clearSyncTelemetry();
+  }
+  setActiveSyncUserId(userId);
+}
+
 function isInitialSeedDone(): boolean {
   return getSyncStateValue(INITIAL_SEED_DONE_KEY) === '1';
 }
@@ -451,10 +478,22 @@ export function setSyncConfig(input: { baseUrl: string; username: string; device
   return makeStatus(config, readSession());
 }
 
+export async function checkSyncUsernameExists(): Promise<boolean> {
+  const config = requireConfig();
+  const response = await requestRaw(
+    config,
+    `/v1/auth/user-exists?username=${encodeURIComponent(config.username)}`
+  );
+  if (!response.ok) throw await throwApiError(response);
+  const payload = await parseJsonResponse<SyncUserExistsResponse>(response);
+  return payload.exists === true;
+}
+
 export function clearSyncConfigAndSession(): SyncStatus {
   clearSession();
   clearConfig();
   clearSyncTelemetry();
+  setActiveSyncUserId(null);
   return makeStatus(null, null);
 }
 
@@ -471,6 +510,7 @@ export async function bootstrapSync(password: string, bootstrapToken: string): P
   });
   if (!response.ok) throw await throwApiError(response);
   const payload = await parseJsonResponse<TokenResponse>(response);
+  prepareLocalVaultForUser(payload.userId);
   writeSessionFromToken(payload);
   return makeStatus(config, readSession());
 }
@@ -487,6 +527,7 @@ export async function registerSync(password: string): Promise<SyncStatus> {
   });
   if (!response.ok) throw await throwApiError(response);
   const payload = await parseJsonResponse<TokenResponse>(response);
+  prepareLocalVaultForUser(payload.userId);
   writeSessionFromToken(payload);
   return makeStatus(config, readSession());
 }
@@ -536,6 +577,7 @@ export async function loginSync(password: string, mfaCode?: string): Promise<Syn
     throw await throwApiError(response);
   }
   const payload = await parseJsonResponse<TokenResponse>(response);
+  prepareLocalVaultForUser(payload.userId);
   writeSessionFromToken(payload);
   return makeStatus(config, readSession());
 }
@@ -604,6 +646,29 @@ export async function logoutSync(): Promise<SyncStatus> {
 
   clearSession();
   return makeStatus(config, null);
+}
+
+export async function switchSyncUser(): Promise<SyncStatus> {
+  const config = readConfig();
+  const session = readSession();
+
+  if (config && session) {
+    try {
+      await requestRaw(config, '/v1/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken: session.refreshToken }),
+      });
+    } catch {
+      // Best effort logout; continue with local reset regardless.
+    }
+  }
+
+  clearSession();
+  clearConfig();
+  clearSyncTelemetry();
+  setActiveSyncUserId(null);
+  wipeVault();
+  return makeStatus(null, null);
 }
 
 export async function getSyncKeyEnvelope(): Promise<SyncKeyEnvelope | null> {

@@ -2,6 +2,7 @@
 
 import {
   bootstrapSync,
+  checkSyncUsernameExists,
   clearSyncConfigAndSession,
   disableSyncMfa,
   enableSyncMfa,
@@ -17,6 +18,7 @@ import {
   setSyncKeyEnvelope,
   setupSyncMfa,
   setSyncConfig,
+  switchSyncUser,
 } from './syncService.js';
 import {
   clearUnlockedVaultRootKey,
@@ -88,6 +90,12 @@ export function registerSyncHandlers(
     const status = setSyncConfig(config);
     log('info', `sync:setConfig - endpoint ${status.baseUrl}`);
     return status;
+  });
+
+  ipcMain.handle('sync:checkUsername', async () => {
+    const exists = await checkSyncUsernameExists();
+    log('info', `sync:checkUsername - ${exists ? 'existing' : 'new'} account`);
+    return { exists };
   });
 
   ipcMain.handle('sync:clearConfig', () => {
@@ -190,6 +198,13 @@ export function registerSyncHandlers(
     clearUnlockedVaultRootKey();
     const status = await logoutSync();
     log('info', 'sync:logout - session revoked locally');
+    return status;
+  });
+
+  ipcMain.handle('sync:switchUser', async () => {
+    clearUnlockedVaultRootKey();
+    const status = await switchSyncUser();
+    log('warn', 'sync:switchUser - sync account cleared and local vault wiped for user switch');
     return status;
   });
 

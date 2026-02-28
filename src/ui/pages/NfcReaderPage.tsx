@@ -29,11 +29,13 @@ interface NfcReaderPageProps {
   isConnected: boolean;
   onConnectionChange: (connected: boolean) => void;
   terminalEnabled: boolean;
+  highlightConnect?: boolean;
 }
 
 export const NfcReaderPage = ({
   isTerminalOpen, onToggleTerminal,
   isConnected, onConnectionChange, terminalEnabled,
+  highlightConnect = false,
 }: NfcReaderPageProps) => {
 
   /* â”€â”€ Connection state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -282,6 +284,7 @@ export const NfcReaderPage = ({
             statusMsg={statusMsg}
             onConnect={handleConnect}
             onDisconnect={handleDisconnect}
+            highlightConnect={highlightConnect}
           />
         </div>
 

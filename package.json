@@ -112,6 +112,14 @@
         "to": "extension"
       }
     ],
+    "protocols": [
+      {
+        "name": "SecurePass Invite Links",
+        "schemes": [
+          "securepass"
+        ]
+      }
+    ],
     "linux": {
       "target": [
         "deb"

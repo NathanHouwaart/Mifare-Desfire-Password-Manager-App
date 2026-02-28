@@ -8,6 +8,7 @@ import { TapCardOverlay } from '../Components/TapCardOverlay';
 
 interface CardPageProps {
   isNfcConnected: boolean;
+  highlightInitAction?: boolean;
 }
 
 type OpState = 'idle' | 'busy' | 'ok' | 'err';
@@ -45,12 +46,14 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 // ─── action button ───────────────────────────────────────────────────────────
 function ActionBtn({
-  onClick, disabled, variant = 'default', children,
+  onClick, disabled, variant = 'default', children, className = '', dataGuideItem,
 }: {
   onClick: () => void;
   disabled?: boolean;
   variant?: 'default' | 'destructive';
   children: React.ReactNode;
+  className?: string;
+  dataGuideItem?: string;
 }) {
   const base = `flex items-center gap-2 px-4 py-2 rounded-xl text-[14px] font-medium
                 select-none transition-all duration-100 active:scale-[0.97]
@@ -60,7 +63,12 @@ function ActionBtn({
       ? 'bg-err-soft text-err border border-err-edge hover:bg-err/20 disabled:opacity-40'
       : 'bg-accent-soft text-accent border border-accent-edge hover:bg-accent/20 disabled:opacity-40';
   return (
-    <button className={`${base} ${style}`} onClick={onClick} disabled={disabled}>
+    <button
+      className={`${base} ${style} ${className}`}
+      onClick={onClick}
+      disabled={disabled}
+      data-guide-item={dataGuideItem}
+    >
       {children}
     </button>
   );
@@ -78,11 +86,13 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const CardPage = ({ isNfcConnected }: CardPageProps) => {
+export const CardPage = ({ isNfcConnected, highlightInitAction = false }: CardPageProps) => {
 
   // ── Probe state ────────────────────────────────────────────────────────────
   const [uid,             setUid]             = useState<string | null>(null);
   const [isInit,          setIsInit]          = useState<boolean | null>(null);
+  const [isCompatible,    setIsCompatible]    = useState<boolean | null>(null);
+  const [compatibilityError, setCompatibilityError] = useState<string | null>(null);
   const [freeMemory,      setFreeMemory]      = useState<number | null>(null);
   const [aids,            setAids]            = useState<string[] | null>(null);
 
@@ -108,15 +118,31 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
   // ── Probe card ─────────────────────────────────────────────────────────────
   const handleProbe = useCallback(async () => {
     setProbeState('busy'); setProbeMsg('Probing…');
-    setUid(null); setIsInit(null); setFreeMemory(null); setAids(null);
+    setUid(null); setIsInit(null); setIsCompatible(null); setCompatibilityError(null); setFreeMemory(null); setAids(null);
     try {
-      const { uid, isInitialised } = await window.electron['card:probe']();
+      const {
+        uid,
+        isInitialised,
+        isCompatibleWithCurrentVault,
+        compatibilityError,
+      } = await window.electron['card:probe']();
       if (uid === null) {
         setProbeState('err'); setProbeMsg('No card detected');
       } else {
         setUid(uid);
         setIsInit(isInitialised);
-        setProbeState('ok'); setProbeMsg('Card detected');
+        setIsCompatible(isCompatibleWithCurrentVault);
+        setCompatibilityError(compatibilityError ?? null);
+        if (isInitialised && isCompatibleWithCurrentVault === true) {
+          window.dispatchEvent(new Event('securepass:guide-card-initialized'));
+        }
+        if (isInitialised && isCompatibleWithCurrentVault === false) {
+          setProbeState('ok'); setProbeMsg('Card detected (belongs to another vault)');
+        } else if (isInitialised && isCompatibleWithCurrentVault === null && compatibilityError) {
+          setProbeState('ok'); setProbeMsg('Card detected (compatibility not verified)');
+        } else {
+          setProbeState('ok'); setProbeMsg('Card detected');
+        }
       }
     } catch (err) {
       setProbeState('err'); setProbeMsg(errMsg(err));
@@ -159,7 +185,10 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
     try {
       await window.electron['card:init']();
       setIsInit(true);
+      setIsCompatible(true);
+      setCompatibilityError(null);
       setInitState('ok'); setInitMsg('Card initialised successfully');
+      window.dispatchEvent(new Event('securepass:guide-card-initialized'));
     } catch (err) {
       if (!tapCancelled) {
         setInitState('err'); setInitMsg(errMsg(err));
@@ -181,6 +210,8 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
     try {
       await window.electron['card:format']();
       setIsInit(false);
+      setIsCompatible(null);
+      setCompatibilityError(null);
       setUid(null); setFreeMemory(null); setAids(null);
       setFormatState('ok'); setFormatMsg('Card formatted and vault wiped');
     } catch (err) {
@@ -250,8 +281,17 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
               label="Initialised"
               value={isInit === null ? '—' : isInit ? 'Yes' : 'No'}
             />
+            {isInit && (
+              <InfoRow
+                label="Matches Current Vault"
+                value={isCompatible === null ? 'Unknown' : isCompatible ? 'Yes' : 'No'}
+              />
+            )}
             {freeMemory !== null && (
               <InfoRow label="Free Memory" value={`${freeMemory} bytes`} />
+            )}
+            {compatibilityError && (
+              <p className="text-[12px] text-warn">{compatibilityError}</p>
             )}
           </div>
         )}
@@ -290,13 +330,34 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
       {/* ── Init section ── */}
       <Section title="Initialise Card">
         <div className="flex items-start gap-3 rounded-xl bg-well border border-edge p-4">
-          {isInit === true ? (
+          {isInit === true && isCompatible === true ? (
             <>
               <ShieldCheck className="w-5 h-5 text-ok shrink-0 mt-0.5" />
               <div>
-                <p className="text-[14px] font-semibold text-ok">Card is initialised</p>
+                <p className="text-[14px] font-semibold text-ok">Card is ready for this vault</p>
                 <p className="text-[13px] text-lo mt-0.5">
                   This card is linked to this vault. Tap it to unlock entries.
+                </p>
+              </div>
+            </>
+          ) : isInit === true && isCompatible === false ? (
+            <>
+              <AlertTriangle className="w-5 h-5 text-warn shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[14px] font-semibold text-warn">Card belongs to a different vault</p>
+                <p className="text-[13px] text-lo mt-0.5">
+                  If you are signing into an existing synced account, use the card already used by that account.
+                  Only initialize here for a brand-new or empty vault.
+                </p>
+              </div>
+            </>
+          ) : isInit === true ? (
+            <>
+              <AlertTriangle className="w-5 h-5 text-mid shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[14px] font-semibold text-mid">Card detected, compatibility unknown</p>
+                <p className="text-[13px] text-lo mt-0.5">
+                  Keep the card on the reader and press Probe again to verify this card matches the current vault.
                 </p>
               </div>
             </>
@@ -306,24 +367,33 @@ export const CardPage = ({ isNfcConnected }: CardPageProps) => {
               <div>
                 <p className="text-[14px] font-semibold text-mid">Card not initialised</p>
                 <p className="text-[13px] text-lo mt-0.5">
-                  Initialise to link this card to the vault. A unique key will be written to the
-                  card and tied to this machine's secret.
+                  Initialise to link this card to the current vault. If you already have a synced account,
+                  use that account's existing card instead of creating a new one.
                 </p>
               </div>
             </>
           )}
         </div>
 
-        {isInit !== true && (
-          <div className="flex items-center gap-3">
+        {(isInit !== true || isCompatible === false) && (
+          <div className="flex flex-col gap-2">
+            {isCompatible === false && (
+              <p className="text-[12px] text-warn">
+                Re-initializing changes this card&apos;s vault secret. Use this only if the vault is new/empty.
+              </p>
+            )}
+            <div className="flex items-center gap-3">
             <ActionBtn
               onClick={handleInit}
               disabled={!isNfcConnected || initState === 'busy'}
+              className={highlightInitAction ? 'guide-click-target' : ''}
+              dataGuideItem="card-init"
             >
               <Wifi className="w-4 h-4" />
-              Initialise Card
+              {isCompatible === false ? 'Initialize for This Vault' : 'Initialise Card'}
             </ActionBtn>
             <Badge state={initState} label={initMsg} />
+            </div>
           </div>
         )}
       </Section>

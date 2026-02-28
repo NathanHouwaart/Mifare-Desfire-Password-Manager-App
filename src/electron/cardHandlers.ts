@@ -56,6 +56,17 @@ function uidToBuffer(uidHex: string): Buffer {
   return Buffer.from(uidHex.replace(/:/g, ''), 'hex');
 }
 
+function isTransientCompatibilityError(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes('no card') ||
+    text.includes('card not found') ||
+    text.includes('card timeout') ||
+    text.includes('timed out') ||
+    text.includes('tap cancelled')
+  );
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 export function registerCardHandlers(
@@ -73,8 +84,51 @@ export function registerCardHandlers(
     return nfcBinding.isCardInitialised();
   });
   // ── card:probe ──────────────────────────────────────────────────────────
-  ipcMain.handle('card:probe', (): Promise<{ uid: string | null; isInitialised: boolean }> => {
-    return nfcBinding.probeCard();
+  ipcMain.handle('card:probe', async (): Promise<{
+    uid: string | null;
+    isInitialised: boolean;
+    isCompatibleWithCurrentVault: boolean | null;
+    compatibilityError?: string;
+  }> => {
+    const probe = await nfcBinding.probeCard();
+    if (probe.uid === null || !probe.isInitialised) {
+      return {
+        ...probe,
+        isCompatibleWithCurrentVault: null,
+      };
+    }
+
+    const rootSecret = getCryptoRootSecret();
+    const uidBuf = uidToBuffer(probe.uid);
+    const readKey = deriveCardKey(rootSecret, uidBuf, 0x02);
+    let cardSecret: Buffer | null = null;
+
+    try {
+      const secret = await nfcBinding.readCardSecret(Array.from(readKey));
+      cardSecret = Buffer.from(secret);
+      return {
+        ...probe,
+        isCompatibleWithCurrentVault: true,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (isTransientCompatibilityError(message)) {
+        return {
+          ...probe,
+          isCompatibleWithCurrentVault: null,
+          compatibilityError: 'Could not verify compatibility. Keep the card on the reader and probe again.',
+        };
+      }
+      return {
+        ...probe,
+        isCompatibleWithCurrentVault: false,
+        compatibilityError: message,
+      };
+    } finally {
+      if (cardSecret) zeroizeBuffer(cardSecret);
+      zeroizeBuffer(readKey);
+      zeroizeBuffer(rootSecret);
+    }
   });
   // ── card:init ───────────────────────────────────────────────────────────────
   ipcMain.handle('card:init', async (): Promise<boolean> => {

@@ -8,6 +8,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
     listComPorts: () => ipcInvoke("listComPorts"),
     onNfcLog: (callback: (entry: NfcLogEntry) => void) => ipcOn('nfc-log', callback),
     onSelfTestProgress: (callback: (result: SelfTestResultDto) => void) => ipcOn('nfc:selfTestProgress', callback),
+    onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => ipcOn('securepass:syncInvite', callback),
     saveFile: (filename: string, content: string) => ipcInvoke("saveFile", filename, content),
     getFirmwareVersion: () => ipcInvoke("getFirmwareVersion"),
     runSelfTests: () => ipcInvoke("runSelfTests"),
@@ -45,7 +46,9 @@ electron.contextBridge.exposeInMainWorld("electron", {
 
     // Sync helpers
     'sync:getStatus':   () => ipcInvoke('sync:getStatus'),
+    'sync:consumeInvite': () => ipcInvoke('sync:consumeInvite'),
     'sync:setConfig':   (config: SyncConfigDto) => ipcInvoke('sync:setConfig', config),
+    'sync:checkUsername': () => ipcInvoke('sync:checkUsername'),
     'sync:clearConfig': () => ipcInvoke('sync:clearConfig'),
     'sync:bootstrap':   (payload: SyncBootstrapDto) => ipcInvoke('sync:bootstrap', payload),
     'sync:register':    (payload: SyncRegisterDto) => ipcInvoke('sync:register', payload),
@@ -55,6 +58,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'sync:mfaEnable':   (payload: SyncMfaCodeDto) => ipcInvoke('sync:mfaEnable', payload),
     'sync:mfaDisable':  (payload: SyncMfaCodeDto) => ipcInvoke('sync:mfaDisable', payload),
     'sync:logout':      () => ipcInvoke('sync:logout'),
+    'sync:switchUser':  () => ipcInvoke('sync:switchUser'),
     'sync:push':        () => ipcInvoke('sync:push'),
     'sync:pull':        () => ipcInvoke('sync:pull'),
     'sync:syncNow':     () => ipcInvoke('sync:syncNow'),

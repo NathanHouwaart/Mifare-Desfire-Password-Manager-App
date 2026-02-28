@@ -92,10 +92,19 @@ type ExtensionOpenFolderResultDto = {
   error?: string;
 };
 
+type SyncInvitePayloadDto = {
+  baseUrl: string;
+  username?: string;
+};
+
 type SyncConfigDto = {
   baseUrl: string;
   username: string;
   deviceName?: string;
+};
+
+type SyncUsernameCheckDto = {
+  exists: boolean;
 };
 
 type SyncBootstrapDto = {
@@ -198,6 +207,7 @@ type SyncVaultKeyStatusDto = {
 type RendererEvents = {
   'nfc-log': NfcLogEntry;
   'nfc:selfTestProgress': SelfTestResultDto;
+  'securepass:syncInvite': SyncInvitePayloadDto;
 };
 
 // 1) canonical single source: define your IPC handlers here
@@ -217,8 +227,13 @@ type IPCHandlers = {
   'card:peekUid': () => Promise<string | null>;
   /** True if the vault application (AID 505700) exists on the card. */
   'card:isInitialised': () => Promise<boolean>;
-  /** Single-scan combined probe: one RF scan returning uid + isInitialised. */
-  'card:probe': () => Promise<{ uid: string | null; isInitialised: boolean }>;
+  /** Single-scan probe with vault compatibility check against the active root key. */
+  'card:probe': () => Promise<{
+    uid: string | null;
+    isInitialised: boolean;
+    isCompatibleWithCurrentVault: boolean | null;
+    compatibilityError?: string;
+  }>;
   /** Waits for card tap then runs the full secure initialisation sequence. */
   'card:init': () => Promise<boolean>;
   /** Free EEPROM bytes remaining on the PICC. */
@@ -259,8 +274,12 @@ type IPCHandlers = {
   // —— Sync operations ——————————————————————————————————————————————————————————————
   /** Returns current local sync config/session status. */
   'sync:getStatus': () => Promise<SyncStatusDto>;
+  /** Returns and clears a pending startup invite payload (if any). */
+  'sync:consumeInvite': () => Promise<SyncInvitePayloadDto | null>;
   /** Persists sync endpoint + username/device metadata. */
   'sync:setConfig': (config: SyncConfigDto) => Promise<SyncStatusDto>;
+  /** Checks whether the configured username already exists on the server. */
+  'sync:checkUsername': () => Promise<SyncUsernameCheckDto>;
   /** Removes local sync config and session data. */
   'sync:clearConfig': () => Promise<SyncStatusDto>;
   /** Legacy one-time account bootstrap against a fresh server. */
@@ -279,6 +298,8 @@ type IPCHandlers = {
   'sync:mfaDisable': (payload: SyncMfaCodeDto) => Promise<SyncMfaStatusDto>;
   /** Logout and clear local session state. */
   'sync:logout': () => Promise<SyncStatusDto>;
+  /** Logs out, clears sync config, and wipes local vault data so another user can sign in safely. */
+  'sync:switchUser': () => Promise<SyncStatusDto>;
   /** Pushes locally queued encrypted changes. */
   'sync:push': () => Promise<SyncPushResultDto>;
   /** Pulls remote encrypted changes since local cursor. */
@@ -309,6 +330,7 @@ type ExposedElectronAPI = {
 } & {
   onNfcLog: (callback: (entry: NfcLogEntry) => void) => () => void;
   onSelfTestProgress: (callback: (result: SelfTestResultDto) => void) => () => void;
+  onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => () => void;
 };
 
 // 4) augment global Window so you only maintain IPCHandlers
