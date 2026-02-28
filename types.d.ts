@@ -103,6 +103,10 @@ type SyncConfigDto = {
   deviceName?: string;
 };
 
+type SyncValidateServerDto = {
+  baseUrl: string;
+};
+
 type SyncUsernameCheckDto = {
   exists: boolean;
 };
@@ -202,6 +206,26 @@ type SyncVaultKeyStatusDto = {
   unlockedAt?: number;
 };
 
+type SyncServerValidationDto = {
+  baseUrl: string;
+  healthy: boolean;
+  hasUsers: boolean;
+  userCount: number;
+};
+
+type SyncDeviceDto = {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastSeenAt: string;
+  active: boolean;
+  isCurrent: boolean;
+};
+
+type SyncUpdateDeviceDto = {
+  name: string;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 type RendererEvents = {
@@ -274,6 +298,8 @@ type IPCHandlers = {
   // —— Sync operations ——————————————————————————————————————————————————————————————
   /** Returns current local sync config/session status. */
   'sync:getStatus': () => Promise<SyncStatusDto>;
+  /** Validates that a sync server URL is reachable and compatible. */
+  'sync:validateServer': (payload: SyncValidateServerDto) => Promise<SyncServerValidationDto>;
   /** Returns and clears a pending startup invite payload (if any). */
   'sync:consumeInvite': () => Promise<SyncInvitePayloadDto | null>;
   /** Persists sync endpoint + username/device metadata. */
@@ -300,6 +326,10 @@ type IPCHandlers = {
   'sync:logout': () => Promise<SyncStatusDto>;
   /** Logs out, clears sync config, and wipes local vault data so another user can sign in safely. */
   'sync:switchUser': () => Promise<SyncStatusDto>;
+  /** Lists devices linked to this sync account. */
+  'sync:getDevices': () => Promise<SyncDeviceDto[]>;
+  /** Renames the currently authenticated device on the sync server. */
+  'sync:updateCurrentDeviceName': (payload: SyncUpdateDeviceDto) => Promise<SyncDeviceDto>;
   /** Pushes locally queued encrypted changes. */
   'sync:push': () => Promise<SyncPushResultDto>;
   /** Pulls remote encrypted changes since local cursor. */

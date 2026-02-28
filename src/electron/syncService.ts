@@ -2,6 +2,7 @@ import { app, safeStorage } from 'electron';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 import {
   applyRemoteDelete,
@@ -18,6 +19,7 @@ import {
 
 const SYNC_CONFIG_FILE = 'sync-config.json';
 const SYNC_SESSION_FILE = 'sync-session.bin';
+const SYNC_INSTALLATION_ID_FILE = 'sync-installation-id.txt';
 const CURSOR_KEY = 'sync_cursor';
 const LAST_SYNC_AT_KEY = 'sync_last_at';
 const LAST_SYNC_ATTEMPT_AT_KEY = 'sync_last_attempt_at';
@@ -31,6 +33,7 @@ interface SyncConfig {
   baseUrl: string;
   username: string;
   deviceName: string;
+  clientId: string;
 }
 
 interface SyncSession {
@@ -103,6 +106,24 @@ interface SyncUserExistsResponse {
   exists: boolean;
 }
 
+interface SyncHealthResponse {
+  status?: string;
+}
+
+interface SyncAuthStatusResponse {
+  userCount?: number;
+  hasUsers?: boolean;
+  bootstrapped?: boolean;
+}
+
+interface SyncDevicesResponse {
+  devices: SyncDevice[];
+}
+
+interface SyncDeviceResponse {
+  device: SyncDevice;
+}
+
 export interface SyncStatus {
   configured: boolean;
   loggedIn: boolean;
@@ -158,12 +179,32 @@ export interface SyncMfaSetup {
   otpauthUrl: string;
 }
 
+export interface SyncServerValidation {
+  baseUrl: string;
+  healthy: boolean;
+  hasUsers: boolean;
+  userCount: number;
+}
+
+export interface SyncDevice {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastSeenAt: string;
+  active: boolean;
+  isCurrent: boolean;
+}
+
 function configPath(): string {
   return path.join(app.getPath('userData'), SYNC_CONFIG_FILE);
 }
 
 function sessionPath(): string {
   return path.join(app.getPath('userData'), SYNC_SESSION_FILE);
+}
+
+function installationIdPath(): string {
+  return path.join(app.getPath('userData'), SYNC_INSTALLATION_ID_FILE);
 }
 
 function getDefaultDeviceName(): string {
@@ -183,6 +224,30 @@ function normalizeBaseUrl(raw: string): string {
   return url.toString().replace(/\/$/, '');
 }
 
+function normalizeClientId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.length < 16 || trimmed.length > 128) return null;
+  if (!/^[A-Za-z0-9._:-]+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function getOrCreateInstallationId(): string {
+  const file = installationIdPath();
+  try {
+    if (fs.existsSync(file)) {
+      const current = fs.readFileSync(file, 'utf-8');
+      const normalized = normalizeClientId(current);
+      if (normalized) return normalized;
+    }
+  } catch {
+    // Fall through and create a new identifier.
+  }
+
+  const next = `sp-${crypto.randomUUID()}`;
+  fs.writeFileSync(file, next, 'utf-8');
+  return next;
+}
+
 function ensureSecureStorageAvailable(): void {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('safeStorage unavailable: cannot store sync session securely');
@@ -194,12 +259,14 @@ function readConfig(): SyncConfig | null {
   if (!fs.existsSync(file)) return null;
   const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<SyncConfig>;
   if (!parsed.baseUrl || !parsed.username) return null;
+  const fallbackClientId = getOrCreateInstallationId();
   return {
     baseUrl: normalizeBaseUrl(parsed.baseUrl),
     username: parsed.username,
     deviceName: parsed.deviceName && parsed.deviceName.trim().length > 0
       ? parsed.deviceName.trim()
       : getDefaultDeviceName(),
+    clientId: parsed.clientId ? normalizeClientId(parsed.clientId) ?? fallbackClientId : fallbackClientId,
   };
 }
 
@@ -354,7 +421,7 @@ function isRouteNotFoundError(message: string): boolean {
 }
 
 async function requestRaw(
-  config: SyncConfig,
+  config: Pick<SyncConfig, 'baseUrl'>,
   inputPath: string,
   init: RequestInit = {},
   session: SyncSession | null = null
@@ -466,16 +533,65 @@ export function getSyncStatus(): SyncStatus {
 }
 
 export function setSyncConfig(input: { baseUrl: string; username: string; deviceName?: string }): SyncStatus {
+  const existing = readConfig();
   const config: SyncConfig = {
     baseUrl: normalizeBaseUrl(input.baseUrl),
     username: input.username.trim(),
     deviceName: input.deviceName && input.deviceName.trim().length > 0
       ? input.deviceName.trim()
       : getDefaultDeviceName(),
+    clientId: existing?.clientId ?? getOrCreateInstallationId(),
   };
   if (config.username.length < 3) throw new Error('Username must be at least 3 characters');
   writeConfig(config);
   return makeStatus(config, readSession());
+}
+
+export async function validateSyncServer(baseUrl: string): Promise<SyncServerValidation> {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  const transientConfig: Pick<SyncConfig, 'baseUrl'> = {
+    baseUrl: normalizedBaseUrl,
+  };
+
+  const healthResponse = await requestRaw(transientConfig, '/v1/health');
+  if (!healthResponse.ok) {
+    throw await throwApiError(healthResponse);
+  }
+
+  await parseJsonResponse<SyncHealthResponse>(healthResponse);
+
+  const authStatusResponse = await requestRaw(transientConfig, '/v1/auth/status');
+  if (!authStatusResponse.ok) {
+    if (authStatusResponse.status === 404) {
+      throw new Error(
+        'Sync API 404: /v1/auth/status not found. Update and restart your sync server.'
+      );
+    }
+    throw await throwApiError(authStatusResponse);
+  }
+
+  const payload = await parseJsonResponse<SyncAuthStatusResponse>(authStatusResponse);
+  const hasUsers =
+    typeof payload.hasUsers === 'boolean'
+      ? payload.hasUsers
+      : typeof payload.bootstrapped === 'boolean'
+        ? payload.bootstrapped
+        : typeof payload.userCount === 'number'
+          ? payload.userCount > 0
+          : false;
+  const userCount =
+    typeof payload.userCount === 'number'
+      ? payload.userCount
+      : hasUsers
+        ? 1
+        : 0;
+
+  return {
+    baseUrl: normalizedBaseUrl,
+    healthy: true,
+    hasUsers,
+    userCount,
+  };
 }
 
 export async function checkSyncUsernameExists(): Promise<boolean> {
@@ -487,6 +603,37 @@ export async function checkSyncUsernameExists(): Promise<boolean> {
   if (!response.ok) throw await throwApiError(response);
   const payload = await parseJsonResponse<SyncUserExistsResponse>(response);
   return payload.exists === true;
+}
+
+export async function getSyncDevices(): Promise<SyncDevice[]> {
+  const config = requireConfig();
+  const response = await requestAuthedJson<SyncDevicesResponse>(config, '/v1/auth/devices');
+  return Array.isArray(response.devices) ? response.devices : [];
+}
+
+export async function updateCurrentSyncDeviceName(name: string): Promise<SyncDevice> {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    throw new Error('Device name is required');
+  }
+
+  const config = requireConfig();
+  const response = await requestAuthedJson<SyncDeviceResponse>(config, '/v1/auth/devices/current', {
+    method: 'PATCH',
+    body: JSON.stringify({ name: trimmed }),
+  });
+
+  if (!response.device) {
+    throw new Error('Sync server did not return updated device details');
+  }
+
+  const current = readConfig();
+  if (current) {
+    current.deviceName = trimmed;
+    writeConfig(current);
+  }
+
+  return response.device;
 }
 
 export function clearSyncConfigAndSession(): SyncStatus {
@@ -506,6 +653,7 @@ export async function bootstrapSync(password: string, bootstrapToken: string): P
       username: config.username,
       password,
       deviceName: config.deviceName,
+      clientId: config.clientId,
     }),
   });
   if (!response.ok) throw await throwApiError(response);
@@ -523,6 +671,7 @@ export async function registerSync(password: string): Promise<SyncStatus> {
       username: config.username,
       password,
       deviceName: config.deviceName,
+      clientId: config.clientId,
     }),
   });
   if (!response.ok) throw await throwApiError(response);
@@ -538,11 +687,13 @@ export async function loginSync(password: string, mfaCode?: string): Promise<Syn
     username: string;
     password: string;
     deviceName: string;
+    clientId: string;
     mfaCode?: string;
   } = {
     username: config.username,
     password,
     deviceName: config.deviceName,
+    clientId: config.clientId,
   };
   if (mfaCode && mfaCode.trim().length > 0) {
     requestBody.mfaCode = mfaCode.trim();

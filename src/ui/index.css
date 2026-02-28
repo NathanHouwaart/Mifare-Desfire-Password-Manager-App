@@ -10,9 +10,31 @@
     70%  { transform: scale(1.4);  opacity: 0; }
     100% { transform: scale(1.4);  opacity: 0; }
   }
-  @keyframes fadeSlideUp {
-    from { opacity: 0; transform: translateY(10px); }
-    to   { opacity: 1; transform: translateY(0); }
+  @keyframes wizardSlideHorizontal {
+    from { opacity: 0; transform: translateX(14px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes checkPulse {
+    0%, 100% { transform: scale(1); opacity: 0.75; }
+    50% { transform: scale(1.08); opacity: 1; }
+  }
+  @keyframes syncCheckPulseOnce {
+    0% { transform: scale(0.9); opacity: 0.55; }
+    45% { transform: scale(1.08); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes syncCheckFlashOnce {
+    0% { transform: scale(0.8); opacity: 0; filter: brightness(0.8); }
+    35% { transform: scale(1.15); opacity: 1; filter: brightness(1.2); }
+    100% { transform: scale(1); opacity: 1; filter: brightness(1); }
+  }
+  @keyframes syncCheckProgressRun {
+    from { width: 0%; opacity: 0.75; }
+    to { width: 100%; opacity: 1; }
+  }
+  @keyframes syncCheckProgressDone {
+    from { width: 80%; opacity: 0.6; }
+    to { width: 100%; opacity: 1; }
   }
 }
 
@@ -238,10 +260,67 @@ html, body, #root {
   animation: guideCardBreath 2.1s ease-in-out infinite;
 }
 
+.sync-check-indicator {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  z-index: 20;
+  width: min(92%, 330px);
+  pointer-events: none;
+}
+
+.sync-check-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--color-accent, #a5b4fc) 40%, var(--color-edge, #3f3f46));
+  background: color-mix(in srgb, var(--color-card, #27272a) 92%, transparent);
+  padding: 0.55rem 0.65rem;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+.sync-check-pulse {
+  animation: syncCheckPulseOnce 900ms ease-out 1 both;
+}
+
+.sync-check-flash {
+  animation: syncCheckFlashOnce 650ms ease-out 1 both;
+}
+
+.sync-check-bar {
+  margin-top: 0.35rem;
+  height: 0.2rem;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--color-edge, #3f3f46) 70%, transparent);
+  overflow: hidden;
+}
+
+.sync-check-bar > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+}
+
+.sync-check-bar-fill-running {
+  background: color-mix(in srgb, var(--color-accent, #a5b4fc) 80%, transparent);
+  animation: syncCheckProgressRun 900ms ease-out 1 both;
+}
+
+.sync-check-bar-fill-success {
+  background: color-mix(in srgb, var(--color-ok, #4ade80) 85%, transparent);
+  animation: syncCheckProgressDone 500ms ease-out 1 both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .guide-click-target,
   .guide-click-card,
-  .guide-click-target::before {
+  .guide-click-target::before,
+  .sync-check-pulse,
+  .sync-check-flash,
+  .sync-check-bar-fill-running,
+  .sync-check-bar-fill-success {
     animation: none !important;
   }
 }

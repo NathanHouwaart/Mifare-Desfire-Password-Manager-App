@@ -333,8 +333,7 @@ export function deleteEntry(id: string): boolean {
 
 /**
  * Deletes all entries from the vault.
- * Called by card:format after formatPicc() destroys the card secret.
- * With the secret gone, all derived entry keys are permanently irrecoverable.
+ * Used for explicit local-vault reset flows (for example sync account switch).
  */
 export function wipeVault(): void {
   const db = getDb();

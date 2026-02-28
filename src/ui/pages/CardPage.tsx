@@ -109,7 +109,7 @@ export const CardPage = ({ isNfcConnected, highlightInitAction = false }: CardPa
   const [confirmFormat,   setConfirmFormat]   = useState(false);
   const [confirmFormatText, setConfirmFormatText] = useState('');
 
-  const CONFIRM_PHRASE = 'format and wipe';
+  const CONFIRM_PHRASE = 'format card';
 
   // ── Tap overlay ───────────────────────────────────────────────────────────
   const [tapOverlay,      setTapOverlay]      = useState<{ message: string } | null>(null);
@@ -205,7 +205,7 @@ export const CardPage = ({ isNfcConnected, highlightInitAction = false }: CardPa
     setConfirmFormat(false);
     setConfirmFormatText('');
     setFormatState('busy'); setFormatMsg('Waiting for card tap…');
-    setTapOverlay({ message: 'to format the card and wipe the vault — this cannot be undone' });
+    setTapOverlay({ message: 'to format the card to factory state — this cannot be undone' });
     setTapCancelled(false);
     try {
       await window.electron['card:format']();
@@ -213,7 +213,7 @@ export const CardPage = ({ isNfcConnected, highlightInitAction = false }: CardPa
       setIsCompatible(null);
       setCompatibilityError(null);
       setUid(null); setFreeMemory(null); setAids(null);
-      setFormatState('ok'); setFormatMsg('Card formatted and vault wiped');
+      setFormatState('ok'); setFormatMsg('Card formatted to factory state');
     } catch (err) {
       if (!tapCancelled) {
         setFormatState('err'); setFormatMsg(errMsg(err));
@@ -405,8 +405,7 @@ export const CardPage = ({ isNfcConnected, highlightInitAction = false }: CardPa
           <div>
             <p className="text-[14px] font-semibold text-err">Destructive operation</p>
             <p className="text-[13px] text-lo mt-0.5">
-              Formats the card to factory state and permanently wipes all vault entries. This
-              cannot be undone.
+              Formats only the tapped card to factory state. Vault data on this device is not deleted.
             </p>
           </div>
         </div>
@@ -418,14 +417,14 @@ export const CardPage = ({ isNfcConnected, highlightInitAction = false }: CardPa
             disabled={!isNfcConnected || formatState === 'busy'}
           >
             <Trash2 className="w-4 h-4" />
-            Format &amp; Wipe Vault…
+            Format Card…
           </ActionBtn>
         ) : (
           <div className="flex flex-col gap-3 rounded-xl bg-err-soft border border-err-edge p-4">
             <p className="text-[14px] font-semibold text-err">Are you absolutely sure?</p>
             <p className="text-[13px] text-lo">
-              All vault entries will be permanently deleted and the card will be reset to factory
-              state. <span className="font-medium text-mid">This cannot be undone.</span>
+              This card will be reset to factory state. Vault data on this device is not deleted.
+              <span className="font-medium text-mid"> This cannot be undone.</span>
             </p>
             <div className="flex flex-col gap-1.5">
               <label className="text-[13px] text-lo">
@@ -452,7 +451,7 @@ export const CardPage = ({ isNfcConnected, highlightInitAction = false }: CardPa
                 disabled={formatState === 'busy' || confirmFormatText !== CONFIRM_PHRASE}
               >
                 <Trash2 className="w-4 h-4" />
-                Yes, Format &amp; Wipe
+                Yes, Format Card
               </ActionBtn>
               <ActionBtn onClick={() => { setConfirmFormat(false); setConfirmFormatText(''); }}>
                 Cancel

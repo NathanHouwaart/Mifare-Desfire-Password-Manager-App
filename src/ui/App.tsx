@@ -107,7 +107,24 @@ function App() {
     setShowSyncModal(true);
   }, []);
 
-  const handleSyncInvite = useCallback((invite: SyncInvitePayloadDto) => {
+  const shouldHandleInvite = useCallback(async (): Promise<boolean> => {
+    const mode = (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local';
+    if (mode !== 'synced') return true;
+
+    const api = (window as Window & { electron?: Window['electron'] }).electron;
+    if (!api || typeof api['sync:getStatus'] !== 'function') return false;
+
+    try {
+      const status = await api['sync:getStatus']();
+      return !(status.configured && status.loggedIn);
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const handleSyncInvite = useCallback(async (invite: SyncInvitePayloadDto) => {
+    if (!(await shouldHandleInvite())) return;
+
     if (needsOnboarding) {
       setOnboardingInitialMode('synced');
       setSyncInvitePrefill(invite);
@@ -120,7 +137,7 @@ function App() {
     }
 
     openSyncWizard({ mode: 'synced', invite });
-  }, [needsOnboarding, openSyncWizard, unlocked]);
+  }, [needsOnboarding, openSyncWizard, shouldHandleInvite, unlocked]);
 
   const refreshGuideSyncStatus = useCallback(async () => {
     const currentMode = (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local';
@@ -213,12 +230,15 @@ function App() {
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
+    const api = (window as Window & { electron?: Window['electron'] }).electron;
+    if (!api) return;
 
     const consumeStartupInvite = async () => {
+      if (typeof api['sync:consumeInvite'] !== 'function') return;
       try {
-        const startupInvite = await window.electron['sync:consumeInvite']();
+        const startupInvite = await api['sync:consumeInvite']();
         if (startupInvite) {
-          handleSyncInvite(startupInvite);
+          void handleSyncInvite(startupInvite);
         }
       } catch {
         // Ignore invite startup failures.
@@ -226,9 +246,11 @@ function App() {
     };
 
     void consumeStartupInvite();
-    unsub = window.electron.onSyncInvite((invite) => {
-      handleSyncInvite(invite);
-    });
+    if (typeof api.onSyncInvite === 'function') {
+      unsub = api.onSyncInvite((invite) => {
+        void handleSyncInvite(invite);
+      });
+    }
 
     return () => {
       unsub?.();
@@ -239,9 +261,22 @@ function App() {
     if (!pendingSyncInvite) return;
     if (needsOnboarding) return;
     if (!unlocked) return;
-    openSyncWizard({ mode: 'synced', invite: pendingSyncInvite });
-    setPendingSyncInvite(null);
-  }, [needsOnboarding, openSyncWizard, pendingSyncInvite, unlocked]);
+
+    let cancelled = false;
+    const applyPendingInvite = async () => {
+      const shouldApply = await shouldHandleInvite();
+      if (cancelled) return;
+      if (shouldApply) {
+        openSyncWizard({ mode: 'synced', invite: pendingSyncInvite });
+      }
+      setPendingSyncInvite(null);
+    };
+
+    void applyPendingInvite();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsOnboarding, openSyncWizard, pendingSyncInvite, shouldHandleInvite, unlocked]);
 
   useEffect(() => {
     const onOpenSyncWizard = (event: Event) => {
@@ -599,18 +634,20 @@ function App() {
           className="fixed inset-0 z-40 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm"
           onClick={(e) => { if (e.target === e.currentTarget) closeSyncModal(); }}
         >
-          <OnboardingScreen
-            asModal
-            initialMode={onboardingInitialMode}
-            initialSyncConfig={syncInvitePrefill}
-            onCancel={closeSyncModal}
-            onComplete={(mode) => {
-              localStorage.setItem('setting-sync-mode', mode);
-              window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode } }));
-              setSyncMode(mode);
-              closeSyncModal();
-            }}
-          />
+          <div className="w-full max-w-[560px] [animation:fadeSlideUp_0.2s_ease-out_both]">
+            <OnboardingScreen
+              asModal
+              initialMode={onboardingInitialMode}
+              initialSyncConfig={syncInvitePrefill}
+              onCancel={closeSyncModal}
+              onComplete={(mode) => {
+                localStorage.setItem('setting-sync-mode', mode);
+                window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode } }));
+                setSyncMode(mode);
+                closeSyncModal();
+              }}
+            />
+          </div>
         </div>
       )}
 

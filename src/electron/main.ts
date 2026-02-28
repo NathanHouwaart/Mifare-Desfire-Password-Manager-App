@@ -6,7 +6,6 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { Server } from 'node:net';
 import { isDev } from './utils.js';
-import { MyLibraryBinding, NfcCppBinding } from './bindings.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
 import { openVault, closeVault } from './vault.js';
 import { registerCardHandlers } from './cardHandlers.js';
@@ -17,6 +16,7 @@ import { clearUnlockedVaultRootKey, getUnlockedVaultRootKey } from './vaultKeyMa
 import { startBridgeServer }    from './bridgeServer.js';
 import { cancelCardWait }       from './nfcCancel.js';
 import { registerNativeHost }   from './nativeHostRegistrar.js';
+import type { NfcCppBinding as NfcCppBindingType } from './bindings.js';
 
 // Add global error handlers to catch crashes
 process.on('uncaughtException', (error) => {
@@ -29,7 +29,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 let mainWindow: BrowserWindow | null = null;
-let nfcBinding: NfcCppBinding | null = null;
+let nfcBinding: NfcCppBindingType | null = null;
 let bridgeServer: Server | null = null;
 let shutdownInProgress = false;
 const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twice from 100%
@@ -118,6 +118,13 @@ function publishSyncInvite(invite: SyncInvitePayloadDto): void {
 }
 
 function registerProtocolClient(): void {
+  // Avoid poisoning the user's global protocol association while running in dev.
+  // Opt-in if needed via SECUREPASS_REGISTER_PROTOCOL_IN_DEV=1.
+  if (isDev() && process.env.SECUREPASS_REGISTER_PROTOCOL_IN_DEV !== '1') {
+    console.log(`[invite] Skipping ${APP_PROTOCOL_SCHEME}:// protocol registration in development mode.`);
+    return;
+  }
+
   try {
     if (process.defaultApp && process.argv.length >= 2) {
       app.setAsDefaultProtocolClient(APP_PROTOCOL_SCHEME, process.execPath, [path.resolve(process.argv[1])]);
@@ -130,13 +137,12 @@ function registerProtocolClient(): void {
 }
 
 const startupInvite = parseSyncInviteFromArgv(process.argv);
-if (startupInvite) {
-  pendingSyncInvite = startupInvite;
-}
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
+const blockedColdStartInvite = Boolean(startupInvite && hasSingleInstanceLock);
+
 if (!hasSingleInstanceLock) {
-  app.quit();
+  app.exit(0);
 } else {
   app.on('second-instance', (_event, argv) => {
     const invite = parseSyncInviteFromArgv(argv);
@@ -152,6 +158,10 @@ if (!hasSingleInstanceLock) {
 }
 
 app.on('open-url', (event, url) => {
+  if (!hasSingleInstanceLock) return;
+  // When deep links are restricted to already-running sessions, ignore
+  // open-url events before the main window is available.
+  if (!mainWindow) return;
   event.preventDefault();
   const invite = parseSyncInviteUrl(url);
   if (!invite) return;
@@ -370,7 +380,24 @@ ipcMain.handle('sync:consumeInvite', (): SyncInvitePayloadDto | null => {
   return next;
 });
 
-app.on('ready', () => {
+app.on('ready', async () => {
+  if (!hasSingleInstanceLock) return;
+
+  if (blockedColdStartInvite) {
+    console.log('[invite] Invite link received while app is not running.');
+    await dialog.showMessageBox({
+      type: 'info',
+      title: 'SecurePass Is Not Running',
+      message: 'SecurePass must already be open to use this invite link.',
+      detail: 'Open SecurePass first, then open the invite link again.',
+      buttons: ['OK'],
+      defaultId: 0,
+      noLink: true,
+    });
+    app.exit(0);
+    return;
+  }
+
   console.log('[MAIN.TS] App ready event fired');
   registerProtocolClient();
 
@@ -380,6 +407,7 @@ app.on('ready', () => {
   // Open vault DB and run any pending migrations.
   openVault();
 
+  const { NfcCppBinding } = await import('./bindings.js');
   nfcBinding = new NfcCppBinding();
 
   // Register card and vault IPC handlers now that nfcBinding exists.
@@ -503,14 +531,16 @@ app.on('ready', () => {
   }
 });
 
-ipcMain.handle('greet', (_event: IpcMainInvokeEvent, name: string) => {
+ipcMain.handle('greet', async (_event: IpcMainInvokeEvent, name: string) => {
+  const { MyLibraryBinding } = await import('./bindings.js');
   const obj = new MyLibraryBinding('Electron');
   const result = obj.greet(name);
   console.log('greet result:', result);
   return result;
 });
 
-ipcMain.handle('add', (_event: IpcMainInvokeEvent, a: number, b: number) => {
+ipcMain.handle('add', async (_event: IpcMainInvokeEvent, a: number, b: number) => {
+  const { MyLibraryBinding } = await import('./bindings.js');
   const obj = new MyLibraryBinding('Electron');
   const result = obj.add(a, b);
   console.log('add result:', result);

@@ -46,6 +46,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
 
     // Sync helpers
     'sync:getStatus':   () => ipcInvoke('sync:getStatus'),
+    'sync:validateServer': (payload: SyncValidateServerDto) => ipcInvoke('sync:validateServer', payload),
     'sync:consumeInvite': () => ipcInvoke('sync:consumeInvite'),
     'sync:setConfig':   (config: SyncConfigDto) => ipcInvoke('sync:setConfig', config),
     'sync:checkUsername': () => ipcInvoke('sync:checkUsername'),
@@ -59,6 +60,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'sync:mfaDisable':  (payload: SyncMfaCodeDto) => ipcInvoke('sync:mfaDisable', payload),
     'sync:logout':      () => ipcInvoke('sync:logout'),
     'sync:switchUser':  () => ipcInvoke('sync:switchUser'),
+    'sync:getDevices':  () => ipcInvoke('sync:getDevices'),
+    'sync:updateCurrentDeviceName': (payload: SyncUpdateDeviceDto) => ipcInvoke('sync:updateCurrentDeviceName', payload),
     'sync:push':        () => ipcInvoke('sync:push'),
     'sync:pull':        () => ipcInvoke('sync:pull'),
     'sync:syncNow':     () => ipcInvoke('sync:syncNow'),

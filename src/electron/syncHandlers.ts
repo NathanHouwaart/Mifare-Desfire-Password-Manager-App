@@ -7,6 +7,7 @@ import {
   disableSyncMfa,
   enableSyncMfa,
   getSyncStatus,
+  getSyncDevices,
   getSyncKeyEnvelope,
   getSyncMfaStatus,
   loginSync,
@@ -19,6 +20,8 @@ import {
   setupSyncMfa,
   setSyncConfig,
   switchSyncUser,
+  updateCurrentSyncDeviceName,
+  validateSyncServer,
 } from './syncService.js';
 import {
   clearUnlockedVaultRootKey,
@@ -85,6 +88,12 @@ export function registerSyncHandlers(
   };
 
   ipcMain.handle('sync:getStatus', () => getSyncStatus());
+
+  ipcMain.handle('sync:validateServer', async (_ev, payload: { baseUrl: string }) => {
+    const result = await validateSyncServer(payload.baseUrl);
+    log('info', `sync:validateServer - endpoint ${result.baseUrl}`);
+    return result;
+  });
 
   ipcMain.handle('sync:setConfig', (_ev, config: SyncConfigDto) => {
     const status = setSyncConfig(config);
@@ -206,6 +215,18 @@ export function registerSyncHandlers(
     const status = await switchSyncUser();
     log('warn', 'sync:switchUser - sync account cleared and local vault wiped for user switch');
     return status;
+  });
+
+  ipcMain.handle('sync:getDevices', async () => {
+    const devices = await getSyncDevices();
+    log('info', `sync:getDevices - ${devices.length} device(s)`);
+    return devices;
+  });
+
+  ipcMain.handle('sync:updateCurrentDeviceName', async (_ev, payload: { name: string }) => {
+    const device = await updateCurrentSyncDeviceName(payload.name);
+    log('info', `sync:updateCurrentDeviceName - renamed current device to "${device.name}"`);
+    return device;
   });
 
   ipcMain.handle('sync:getVaultKeyEnvelope', async () => {

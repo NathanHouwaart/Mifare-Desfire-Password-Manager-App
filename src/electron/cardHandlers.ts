@@ -8,7 +8,7 @@
  * card:isInitialised  — true if vault AID 505700 exists on card
  * card:init           — full 11-step secure init (derives keys from active root secret + UID)
  * card:freeMemory     — free EEPROM bytes on the PICC
- * card:format         — FormatPICC + wipe vault DB
+ * card:format         - FormatPICC only (card reset)
  * card:getAids        — list of AIDs on the card
  *
  * Must only run in the main process.
@@ -19,7 +19,6 @@ import crypto from 'node:crypto';
 import { NfcCppBinding } from './bindings.js';
 import { getCryptoRootSecret } from './main.js';
 import { deriveCardKey, zeroizeBuffer } from './keyDerivation.js';
-import { wipeVault } from './vault.js';
 import { beginCardWait } from './nfcCancel.js';
 
 const VAULT_AID: [number, number, number] = [0x50, 0x57, 0x00];
@@ -168,11 +167,10 @@ export function registerCardHandlers(
 
   // ── card:format ─────────────────────────────────────────────────────────────
   ipcMain.handle('card:format', async (): Promise<boolean> => {
-    log('warn', 'card:format — FormatPICC requested, all card data will be destroyed.');
+    log('warn', 'card:format - FormatPICC requested; card data will be destroyed.');
     const result = await nfcBinding.formatCard();
     if (result) {
-      wipeVault();
-      log('warn', 'card:format — card formatted and vault database wiped.');
+      log('warn', 'card:format - card formatted to factory state (vault database unchanged).');
     }
     return result;
   });
@@ -182,3 +180,4 @@ export function registerCardHandlers(
     return nfcBinding.getCardApplicationIds();
   });
 }
+

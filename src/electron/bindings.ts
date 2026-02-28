@@ -16,6 +16,9 @@ const resourcesPath: string = (process as NodeJS.Process & { resourcesPath?: str
 const candidates = [
   path.join(resourcesPath, 'build', 'Release', 'myaddon.node'),
   path.join(resourcesPath, 'build', 'myaddon.node'),
+  // Stable dev fallback based on this file's location (independent of process.cwd()).
+  path.resolve(__dirname, '..', '..', 'build', 'Release', 'myaddon.node'),
+  path.resolve(__dirname, '..', '..', 'build', 'myaddon.node'),
   // Legacy dev fallbacks
   path.resolve(process.cwd(), 'build', 'Release', 'myaddon.node'),
   path.resolve(process.cwd(), 'build', 'myaddon.node'),
