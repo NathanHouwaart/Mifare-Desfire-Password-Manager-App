@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build native addon
+        run: npm run build:addon
+
       - name: Run TypeScript check
         run: npx tsc --noEmit
 
@@ -80,6 +83,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build native addon
+        run: npm run build:addon
 
       - name: Build and package
         run: ${{ matrix.dist_cmd }}
