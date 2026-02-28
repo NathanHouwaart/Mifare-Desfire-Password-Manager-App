@@ -49,8 +49,6 @@ export const GettingStartedCoach = ({
   onOpenNewCredential,
   onCurrentStepChange,
 }: GettingStartedCoachProps) => {
-  if (!open) return null;
-
   const steps: GuideStep[] = [
     {
       id: 'sync',
@@ -96,6 +94,8 @@ export const GettingStartedCoach = ({
   useEffect(() => {
     onCurrentStepChange?.(currentStep?.id ?? null);
   }, [currentStep?.id, onCurrentStepChange]);
+
+  if (!open) return null;
 
   const actionForCurrentStep = () => {
     if (!currentStep) return null;

@@ -323,7 +323,11 @@ export function registerVaultHandlers(
           authTag:    Buffer.from(String(entry.authTag    ?? ''), 'base64'),
         };
         if (!row.id || !row.label || row.ciphertext.length === 0) { skipped++; continue; }
-        insertEntryRaw(row) ? imported++ : skipped++;
+        if (insertEntryRaw(row)) {
+          imported += 1;
+        } else {
+          skipped += 1;
+        }
       } catch { skipped++; }
     }
     log('info', `vault:import — imported ${imported}, skipped ${skipped}`);

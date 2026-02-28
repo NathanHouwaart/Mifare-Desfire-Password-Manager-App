@@ -578,7 +578,7 @@ ipcMain.handle('connect', async (_event: IpcMainInvokeEvent, port: string) => {
   }
 });
 
-ipcMain.handle('disconnect', async (_event: IpcMainInvokeEvent) => {
+ipcMain.handle('disconnect', async () => {
   if (!nfcBinding) throw new Error("NFC Binding not initialized");
   nfcLog('info', 'Disconnecting...');
   try {

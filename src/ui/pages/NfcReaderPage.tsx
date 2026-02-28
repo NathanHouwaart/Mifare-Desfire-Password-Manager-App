@@ -3,8 +3,9 @@ import { Cpu, Terminal } from 'lucide-react';
 import { ConnectionCard }     from '../Components/Nfc/ConnectionCard';
 import { FirmwareVersionCard } from '../Components/Nfc/FirmwareVersionCard';
 import { CardVersionCard }    from '../Components/Nfc/CardVersionCard';
-import { SelfTestCard, INITIAL_TESTS } from '../Components/Nfc/SelfTestCard';
-import type { TestResult }     from '../Components/Nfc/SelfTestCard';
+import { SelfTestCard } from '../Components/Nfc/SelfTestCard';
+import { INITIAL_TESTS } from '../Components/Nfc/selfTestTypes';
+import type { TestResult } from '../Components/Nfc/selfTestTypes';
 
 // Stable canonical ID map â€” avoids fragile string transforms on C++ names
 const TEST_ID_BY_NAME: Record<string, string> = {

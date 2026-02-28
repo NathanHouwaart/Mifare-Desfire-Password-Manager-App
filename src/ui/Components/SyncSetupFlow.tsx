@@ -12,7 +12,6 @@ import {
   LogIn,
   LogOut,
   RefreshCw,
-  Shield,
   UserPlus,
   UserRound,
   X,
@@ -391,7 +390,7 @@ export function SyncSetupFlow({
     try {
       setServerCheckState('running');
       await wait(550);
-      const result = await handleValidateServer(serverInput.trim());
+      await handleValidateServer(serverInput.trim());
       setServerCheckState('success');
       await wait(700);
       setStep('username');
