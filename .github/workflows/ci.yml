@@ -65,6 +65,9 @@ jobs:
           - os: windows-latest
             dist_cmd: npm run dist:win
 
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
     steps:
       - uses: actions/checkout@v4
         with:
