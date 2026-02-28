@@ -46,6 +46,10 @@ export function getUIPath(): string {
         path.resolve(process.cwd(), 'dist-react', 'index.html'),
       ]
     : [
+        // Packaged app: UI is bundled inside app.asar by default.
+        path.join(appPath, 'dist-react', 'index.html'),
+        path.join(resourcesPath, 'app.asar', 'dist-react', 'index.html'),
+        // Fallback when dist-react is copied to resources directly.
         path.join(resourcesPath, 'dist-react', 'index.html'),
         path.join(appPath, '..', 'dist-react', 'index.html'),
       ];
