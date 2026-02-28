@@ -43,9 +43,16 @@ async function runMigrations(pool: Pool): Promise<void> {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
+      client_id TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    ALTER TABLE devices
+      ADD COLUMN IF NOT EXISTS client_id TEXT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_user_client_id_unique
+      ON devices (user_id, client_id);
 
     CREATE TABLE IF NOT EXISTS refresh_tokens (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -21,18 +21,21 @@ interface AuthRouteDeps {
 const usernameSchema = z.string().min(3).max(64).regex(/^[A-Za-z0-9_.-]+$/);
 const passwordSchema = z.string().min(10).max(256);
 const deviceNameSchema = z.string().min(1).max(120).default('desktop');
+const clientIdSchema = z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const mfaCodeSchema = z.string().trim().regex(/^[0-9]{6}$/);
 
 const registerSchema = z.object({
   username: usernameSchema,
   password: passwordSchema,
   deviceName: deviceNameSchema,
+  clientId: clientIdSchema.optional(),
 });
 
 const loginSchema = z.object({
   username: usernameSchema,
   password: passwordSchema,
   deviceName: deviceNameSchema,
+  clientId: clientIdSchema.optional(),
   mfaCode: mfaCodeSchema.optional(),
 });
 
@@ -62,9 +65,28 @@ interface NewSession {
   mfaEnabled: boolean;
 }
 
-async function createDevice(client: PoolClient, userId: string, deviceName: string): Promise<string> {
+async function createDevice(
+  client: PoolClient,
+  userId: string,
+  deviceName: string,
+  clientId?: string
+): Promise<string> {
+  if (clientId) {
+    const upserted = await client.query<{ id: string }>(
+      `INSERT INTO devices (user_id, name, client_id, last_seen_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (user_id, client_id)
+       DO UPDATE SET
+         name = EXCLUDED.name,
+         last_seen_at = now()
+       RETURNING id`,
+      [userId, deviceName, clientId]
+    );
+    return upserted.rows[0].id;
+  }
+
   const inserted = await client.query<{ id: string }>(
-    `INSERT INTO devices (user_id, name) VALUES ($1, $2) RETURNING id`,
+    `INSERT INTO devices (user_id, name, last_seen_at) VALUES ($1, $2, now()) RETURNING id`,
     [userId, deviceName]
   );
   return inserted.rows[0].id;
@@ -99,7 +121,7 @@ function isUniqueViolation(error: unknown): boolean {
 async function createUserSession(
   client: PoolClient,
   config: AppConfig,
-  input: { username: string; password: string; deviceName: string }
+  input: { username: string; password: string; deviceName: string; clientId?: string }
 ): Promise<NewSession> {
   const passwordHash = await hashPassword(input.password);
   const userResult = await client.query<{ id: string; username: string; mfa_enabled: boolean }>(
@@ -109,7 +131,7 @@ async function createUserSession(
   );
 
   const user = userResult.rows[0];
-  const deviceId = await createDevice(client, user.id, input.deviceName);
+  const deviceId = await createDevice(client, user.id, input.deviceName, input.clientId);
   const tokenPair = issueTokenPair(config, user.id, deviceId);
   await persistRefreshToken(client, user.id, deviceId, tokenPair.refreshToken, tokenPair.refreshExpiresAt);
 
@@ -225,7 +247,7 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
       return;
     }
 
-    const { username, password, deviceName, mfaCode } = parsed.data;
+    const { username, password, deviceName, clientId, mfaCode } = parsed.data;
     const userResult = await pool.query<{
       id: string;
       password_hash: string;
@@ -270,7 +292,7 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const deviceId = await createDevice(client, user.id, deviceName);
+      const deviceId = await createDevice(client, user.id, deviceName, clientId);
       const tokenPair = issueTokenPair(config, user.id, deviceId);
       await persistRefreshToken(client, user.id, deviceId, tokenPair.refreshToken, tokenPair.refreshExpiresAt);
       await client.query(
