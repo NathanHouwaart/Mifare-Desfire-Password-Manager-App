@@ -70,6 +70,7 @@ export const Sidebar = ({
 
   let SyncStatusIcon: ElementType;
   let syncIconCls: string;
+  let syncHintCls: string;
   let syncHint: string;
   let syncTitle: string;
   const nfcOnline = isNfcConnected;
@@ -80,26 +81,31 @@ export const Sidebar = ({
   if (syncMode === 'local') {
     SyncStatusIcon = CloudOff;
     syncIconCls = 'text-dim';
+    syncHintCls = 'text-dim';
     syncHint = 'Local';
     syncTitle = 'Local only - click to set up sync';
   } else if (syncStatus?.lastSyncError) {
     SyncStatusIcon = CloudAlert;
     syncIconCls = 'text-warn';
+    syncHintCls = 'text-warn';
     syncHint = 'Error';
     syncTitle = `Sync error: ${syncStatus.lastSyncError}`;
   } else if (syncStatus?.loggedIn) {
     SyncStatusIcon = CloudCheck;
     syncIconCls = 'text-ok';
+    syncHintCls = 'text-ok';
     syncHint = 'Connected';
     syncTitle = `Synced - ${syncStatus.username ?? ''}`;
   } else if (syncStatus?.configured) {
     SyncStatusIcon = CloudAlert;
     syncIconCls = 'text-warn';
+    syncHintCls = 'text-warn';
     syncHint = 'Login';
     syncTitle = 'Sync configured but not logged in';
   } else {
     SyncStatusIcon = CloudOff;
     syncIconCls = 'text-dim';
+    syncHintCls = 'text-dim';
     syncHint = 'Not Set';
     syncTitle = 'Sync not configured';
   }
@@ -150,7 +156,7 @@ export const Sidebar = ({
         >
           <SyncStatusIcon className={`w-[17px] h-[17px] shrink-0 ${syncIconCls}`} />
           <span className="flex-1 text-left">Sync</span>
-          <span className="text-[11px] text-dim">{syncHint}</span>
+          <span className={`text-[11px] ${syncHintCls}`}>{syncHint}</span>
         </button>
       </div>
 

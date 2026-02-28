@@ -114,7 +114,7 @@ export const NfcReaderPage = ({
       if (autoConnectDoneRef.current) return;
       autoConnectDoneRef.current = true;
       if (isConnected) return;                          // already up — don't reconnect
-      if ((localStorage.getItem('setting-autoconnect') ?? 'false') !== 'true') return;
+      if ((localStorage.getItem('setting-autoconnect') ?? 'true') !== 'true') return;
       const lastPort = localStorage.getItem('setting-last-port');
       if (!lastPort) return;
       setStatusMsg('Auto-connecting to ' + lastPort + '…');

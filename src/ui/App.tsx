@@ -13,6 +13,7 @@ import { CardPage } from './pages/CardPage';
 import { NfcReaderPage } from './pages/NfcReaderPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AboutPage } from './pages/AboutPage';
+import { useLiveSync } from './hooks/useLiveSync';
 import './App.css';
 
 const PIN_HASH_KEY = 'app-pin-hash';
@@ -89,6 +90,8 @@ function App() {
   // a real wake-from-background, not the initial focus on startup.
   const wasBlurred = useRef(false);
   const syncModalRef = useRef<HTMLDivElement | null>(null);
+
+  useLiveSync(unlocked);
 
   const closeSyncModal = useCallback(() => {
     setShowSyncModal(false);
@@ -438,21 +441,6 @@ function App() {
     }
     const id = requestAnimationFrame(() => setAppVisible(true));
     return () => cancelAnimationFrame(id);
-  }, [unlocked]);
-
-  // Trigger a sync pass right after unlock so local changes reconcile quickly.
-  useEffect(() => {
-    if (!unlocked) return;
-    const syncOnUnlock = async () => {
-      try {
-        const status = await window.electron['sync:getStatus']();
-        if (!status.configured || !status.loggedIn) return;
-        await window.electron['sync:syncNow']();
-      } catch (err) {
-        console.warn('[sync] unlock sync failed', err);
-      }
-    };
-    void syncOnUnlock();
   }, [unlocked]);
 
   const toggleTheme = () =>

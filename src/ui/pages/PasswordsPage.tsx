@@ -656,6 +656,21 @@ export const PasswordsPage = ({
     setEntries(list);
   }, []);
 
+  const tryAutoSyncAfterVaultChange = useCallback(async () => {
+    try {
+      const syncMode = localStorage.getItem('setting-sync-mode') ?? 'local';
+      if (syncMode !== 'synced') return;
+
+      const status = await window.electron['sync:getStatus']();
+      if (!status.configured || !status.loggedIn) return;
+
+      await window.electron['sync:syncNow']();
+      window.dispatchEvent(new Event('securepass:vault-sync-applied'));
+    } catch (error) {
+      console.warn('[sync] auto-sync after vault change failed:', error);
+    }
+  }, []);
+
   // Refresh when this tab becomes active so sync changes from Settings appear.
   useEffect(() => {
     if (!isActive) return;
@@ -827,8 +842,9 @@ export const PasswordsPage = ({
         await refreshEntries();
       });
     }
+    void tryAutoSyncAfterVaultChange();
     setEditTarget(null);
-  }, [editTarget, withTap, refreshEntries]);
+  }, [editTarget, withTap, refreshEntries, tryAutoSyncAfterVaultChange]);
 
   // ── Delete (no card needed) ──────────────────────────────────────────────
   const handleDelete = useCallback(async () => {
@@ -836,13 +852,19 @@ export const PasswordsPage = ({
     const id = deleteTarget.id;
     setDeleteTarget(null);
     try {
-      await window.electron['vault:deleteEntry'](id);
-      setEntries(prev => prev.filter(e => e.id !== id));
+      const deleted = await window.electron['vault:deleteEntry'](id);
+      if (!deleted) {
+        setTapError('Entry was not found in the vault database.');
+        return;
+      }
+
+      await refreshEntries();
       if (revealedId === id) { setRevealedId(null); setRevealedPayload(null); }
       if (copiedRevealField?.id === id) setCopiedRevealField(null);
       if (copiedUsernameId === id) setCopiedUsernameId(null);
+      void tryAutoSyncAfterVaultChange();
     } catch (err) { setTapError(errMsg(err)); }
-  }, [deleteTarget, revealedId, copiedRevealField, copiedUsernameId]);
+  }, [deleteTarget, revealedId, copiedRevealField, copiedUsernameId, refreshEntries, tryAutoSyncAfterVaultChange]);
 
   // ── Derived ──────────────────────────────────────────────────────────────
   const categories = useMemo(() => {

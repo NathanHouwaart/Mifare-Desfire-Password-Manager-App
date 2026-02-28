@@ -528,6 +528,27 @@ export function SyncSetupFlow({
     }
   };
 
+  const handleDisableMfa = async () => {
+    if (!mfaCode.trim()) {
+      setMessage({ type: 'err', text: 'Authenticator code is required.' });
+      return;
+    }
+
+    setBusy(true);
+    setMessage(null);
+    try {
+      await window.electron['sync:mfaDisable']({ code: mfaCode.trim() });
+      setMfaCode('');
+      setMfaSetup(null);
+      await refreshMfa(true);
+      setMessage({ type: 'ok', text: 'Authenticator disabled.' });
+    } catch (error) {
+      setMessage({ type: 'err', text: toFriendlySyncError(error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleDeviceContinue = async () => {
     if (!syncStatus?.loggedIn) {
       setMessage({ type: 'err', text: 'Sign in first.' });
@@ -1056,6 +1077,100 @@ export function SyncSetupFlow({
                 <h2 className="text-[18px] font-semibold text-hi">Name this device (optional)</h2>
                 <div className="flex items-center gap-2 text-[12px] text-lo"><Laptop className="w-4 h-4" />Shows in linked devices list</div>
                 <input type="text" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="Dad's Laptop" className={inputClass} />
+                <div className="rounded-xl border border-edge bg-input p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[13px] font-semibold text-hi">Authenticator (2FA)</p>
+                    <span className={`text-[11px] px-2 py-0.5 rounded-lg border ${
+                      mfaStatus?.mfaEnabled
+                        ? 'text-ok border-ok-edge bg-ok-soft'
+                        : 'text-dim border-edge bg-card'
+                    }`}>
+                      {mfaStatus?.mfaEnabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </div>
+                  <p className="text-[12px] text-lo">
+                    Optional but strongly recommended for account safety.
+                  </p>
+
+                  {!mfaStatus?.mfaEnabled && !mfaSetup && (
+                    <Button
+                      variant="secondary"
+                      onClick={handleSetupMfa}
+                      disabled={busy || !syncStatus?.loggedIn}
+                      className="w-full min-w-0"
+                      aria-label="Set up authenticator"
+                      title="Set up authenticator"
+                    >
+                      Set up authenticator
+                    </Button>
+                  )}
+
+                  {mfaSetup && (
+                    <div className="rounded-xl border border-edge bg-card/70 p-3 space-y-3">
+                      <p className="text-[12px] text-lo">
+                        Scan the QR code, then enter a 6-digit code to enable 2FA.
+                      </p>
+                      {qrDataUrl ? (
+                        <img
+                          src={qrDataUrl}
+                          alt="Authenticator QR code"
+                          className="w-36 h-36 rounded-lg border border-edge bg-white p-2"
+                        />
+                      ) : (
+                        <p className="text-[12px] text-dim">Generating QR code...</p>
+                      )}
+                      <p className="text-[11px] text-dim break-all">Manual code: {mfaSetup.secret}</p>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={mfaCode}
+                          onChange={(event) => setMfaCode(event.target.value)}
+                          placeholder="6-digit code"
+                          className={inputClass}
+                          maxLength={6}
+                        />
+                        <Button
+                          variant="primary"
+                          onClick={handleEnableMfa}
+                          disabled={busy}
+                          className="w-full sm:w-auto min-w-0"
+                          aria-label="Enable 2FA"
+                          title="Enable 2FA"
+                        >
+                          Enable 2FA
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {mfaStatus?.mfaEnabled && (
+                    <div className="rounded-xl border border-edge bg-card/70 p-3 space-y-2">
+                      <p className="text-[12px] text-lo">To disable 2FA, enter your current authenticator code.</p>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={mfaCode}
+                          onChange={(event) => setMfaCode(event.target.value)}
+                          placeholder="6-digit code"
+                          className={inputClass}
+                          maxLength={6}
+                        />
+                        <Button
+                          variant="danger"
+                          onClick={handleDisableMfa}
+                          disabled={busy}
+                          className="w-full sm:w-auto min-w-0"
+                          aria-label="Disable 2FA"
+                          title="Disable 2FA"
+                        >
+                          Disable 2FA
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div className={navRowClass}>
                   <Button
                     variant="secondary"
@@ -1160,6 +1275,94 @@ export function SyncSetupFlow({
                     <p className="text-[11px] text-lo">
                       Disabling sync keeps passwords on this device and disconnects server backup for this computer only.
                     </p>
+                    <div className="rounded-xl border border-edge bg-card/70 p-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-semibold text-hi">Authenticator (2FA)</p>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-lg border ${
+                          mfaStatus?.mfaEnabled
+                            ? 'text-ok border-ok-edge bg-ok-soft'
+                            : 'text-dim border-edge bg-input'
+                        }`}>
+                          {mfaStatus?.mfaEnabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      </div>
+                      {!mfaStatus?.mfaEnabled && !mfaSetup && (
+                        <Button
+                          variant="secondary"
+                          onClick={handleSetupMfa}
+                          disabled={busy || syncNowBusy}
+                          className="w-full min-w-0"
+                          aria-label="Set up authenticator"
+                          title="Set up authenticator"
+                        >
+                          Set up authenticator
+                        </Button>
+                      )}
+                      {mfaSetup && (
+                        <div className="space-y-2">
+                          <p className="text-[11px] text-lo">
+                            Scan the QR code, then enter a 6-digit code to enable 2FA.
+                          </p>
+                          {qrDataUrl ? (
+                            <img
+                              src={qrDataUrl}
+                              alt="Authenticator QR code"
+                              className="w-32 h-32 rounded-lg border border-edge bg-white p-1.5"
+                            />
+                          ) : (
+                            <p className="text-[11px] text-dim">Generating QR code...</p>
+                          )}
+                          <p className="text-[11px] text-dim break-all">Manual code: {mfaSetup.secret}</p>
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={mfaCode}
+                              onChange={(event) => setMfaCode(event.target.value)}
+                              placeholder="6-digit code"
+                              className={inputClass}
+                              maxLength={6}
+                            />
+                            <Button
+                              variant="primary"
+                              onClick={handleEnableMfa}
+                              disabled={busy || syncNowBusy}
+                              className="w-full sm:w-auto min-w-0"
+                              aria-label="Enable 2FA"
+                              title="Enable 2FA"
+                            >
+                              Enable 2FA
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      {mfaStatus?.mfaEnabled && (
+                        <div className="space-y-2">
+                          <p className="text-[11px] text-lo">Enter a current code to disable 2FA.</p>
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={mfaCode}
+                              onChange={(event) => setMfaCode(event.target.value)}
+                              placeholder="6-digit code"
+                              className={inputClass}
+                              maxLength={6}
+                            />
+                            <Button
+                              variant="danger"
+                              onClick={handleDisableMfa}
+                              disabled={busy || syncNowBusy}
+                              className="w-full sm:w-auto min-w-0"
+                              aria-label="Disable 2FA"
+                              title="Disable 2FA"
+                            >
+                              Disable 2FA
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 

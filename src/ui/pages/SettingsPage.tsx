@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode, type ComponentType } from 'react';
+import QRCode from 'qrcode';
 import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe, Cloud, RefreshCw } from 'lucide-react';
 
 const PIN_HASH_KEY = 'app-pin-hash';
@@ -159,6 +160,11 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [syncFeedback, setSyncFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
   const [syncNowBusy, setSyncNowBusy] = useState(false);
   const [vaultKeyStatus, setVaultKeyStatus] = useState<SyncVaultKeyStatusDto | null>(null);
+  const [mfaStatus, setMfaStatus] = useState<SyncMfaStatusDto | null>(null);
+  const [mfaSetup, setMfaSetup] = useState<SyncMfaSetupDto | null>(null);
+  const [mfaQrDataUrl, setMfaQrDataUrl] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaBusy, setMfaBusy] = useState(false);
 
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
@@ -272,10 +278,45 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }
   };
 
+  const refreshMfaStatus = async (statusOverride?: SyncStatusDto | null) => {
+    const status = statusOverride ?? syncStatus;
+    if (!status?.loggedIn) {
+      setMfaStatus(null);
+      setMfaSetup(null);
+      setMfaQrDataUrl(null);
+      setMfaCode('');
+      return;
+    }
+
+    try {
+      const nextStatus = await window.electron['sync:mfaStatus']();
+      setMfaStatus(nextStatus);
+    } catch {
+      setMfaStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    const url = mfaSetup?.otpauthUrl;
+    if (!url) {
+      setMfaQrDataUrl(null);
+      return;
+    }
+
+    void QRCode.toDataURL(url, {
+      width: 220,
+      margin: 1,
+      color: { dark: '#000000', light: '#ffffff' },
+    })
+      .then((dataUrl) => setMfaQrDataUrl(dataUrl))
+      .catch(() => setMfaQrDataUrl(null));
+  }, [mfaSetup]);
+
   useEffect(() => {
     const init = async () => {
-      await refreshSyncStatus();
+      const status = await refreshSyncStatus();
       await refreshVaultKeyStatus();
+      await refreshMfaStatus(status);
     };
     void init();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -289,17 +330,23 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
       if (mode === 'local') {
         setSyncStatus(null);
         setVaultKeyStatus(null);
+        setMfaStatus(null);
+        setMfaSetup(null);
+        setMfaQrDataUrl(null);
+        setMfaCode('');
       } else {
         void (async () => {
-          await refreshSyncStatus();
+          const status = await refreshSyncStatus();
           await refreshVaultKeyStatus();
+          await refreshMfaStatus(status);
         })();
       }
     };
     const onSyncDataChanged = () => {
       void (async () => {
-        await refreshSyncStatus();
+        const status = await refreshSyncStatus();
         await refreshVaultKeyStatus();
+        await refreshMfaStatus(status);
       })();
     };
     window.addEventListener('securepass:sync-mode-changed', onSyncModeChanged);
@@ -329,6 +376,67 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }
   };
 
+  const handleMfaSetup = async () => {
+    if (!syncStatus?.loggedIn) {
+      syncFeedbackFor('err', 'Sign in to sync before setting up 2FA.');
+      return;
+    }
+
+    setMfaBusy(true);
+    setSyncFeedback(null);
+    try {
+      const setup = await window.electron['sync:mfaSetup']();
+      setMfaSetup(setup);
+      syncFeedbackFor('ok', 'Scan the QR code and enter a 6-digit authenticator code to enable 2FA.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const handleMfaEnable = async () => {
+    if (!mfaCode.trim()) {
+      syncFeedbackFor('err', 'Enter a 6-digit authenticator code.');
+      return;
+    }
+
+    setMfaBusy(true);
+    setSyncFeedback(null);
+    try {
+      await window.electron['sync:mfaEnable']({ code: mfaCode.trim() });
+      setMfaCode('');
+      setMfaSetup(null);
+      await refreshMfaStatus();
+      syncFeedbackFor('ok', '2FA enabled for this account.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const handleMfaDisable = async () => {
+    if (!mfaCode.trim()) {
+      syncFeedbackFor('err', 'Enter your current 6-digit authenticator code to disable 2FA.');
+      return;
+    }
+
+    setMfaBusy(true);
+    setSyncFeedback(null);
+    try {
+      await window.electron['sync:mfaDisable']({ code: mfaCode.trim() });
+      setMfaCode('');
+      setMfaSetup(null);
+      await refreshMfaStatus();
+      syncFeedbackFor('ok', '2FA disabled for this account.');
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
   const handleOpenSyncWizard = () => {
     window.dispatchEvent(new CustomEvent('securepass:open-sync-wizard', {
       detail: syncMode === 'synced' ? { mode: 'synced' as const } : {},
@@ -352,7 +460,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Connection Timeout', 'Abort the connection attempt after this duration')
              || show('Retry Attempts', 'Number of times to retry a failed connection'),
     sync:       show('Backup & Sync', 'Background sync every 2 minutes when logged in')
-             || show('Mode', 'Open Sync Settings', 'Sync Now', 'Last successful sync', 'Last sync error'),
+             || show('Mode', 'Open Sync Settings', 'Sync Now', 'Last successful sync', 'Last sync error', '2FA', 'Authenticator'),
     data:       show('Export Vault', 'Save an encrypted backup of your passwords')
              || show('Import Vault', 'Restore passwords from an encrypted backup')
              || show('App Version', '0.1.0') || show('Stack', 'Electron React C++')
@@ -687,6 +795,103 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                 <p className="text-[13px] text-lo">Last sync attempt: {formatSyncTime(syncStatus?.lastSyncAttemptAt)}</p>
                 {syncStatus?.lastSyncError && (
                   <p className="text-[13px] text-err">Last sync error: {syncStatus.lastSyncError}</p>
+                )}
+              </div>
+            )}
+
+            {syncMode === 'synced' && syncStatus?.loggedIn && (
+              <div className="px-5 py-4 flex flex-col gap-3">
+                <p className="text-[16px] font-medium text-hi">Authenticator (2FA)</p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`text-[12px] px-2 py-1 rounded-lg border ${
+                    mfaStatus?.mfaEnabled
+                      ? 'text-ok border-ok-edge bg-ok-soft'
+                      : 'text-dim border-edge bg-input'
+                  }`}>
+                    {mfaStatus?.mfaEnabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                  {mfaStatus?.pendingEnrollment && (
+                    <span className="text-[12px] px-2 py-1 rounded-lg border text-warn border-warn-edge bg-warn-soft">
+                      Setup Pending
+                    </span>
+                  )}
+                </div>
+                <p className="text-[13px] text-lo">
+                  2FA is optional but strongly recommended for sync accounts.
+                </p>
+
+                {!mfaStatus?.mfaEnabled && !mfaSetup && (
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      onClick={handleMfaSetup}
+                      disabled={mfaBusy}
+                      className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {mfaBusy ? 'Preparing...' : 'Set up 2FA'}
+                    </button>
+                  </div>
+                )}
+
+                {mfaSetup && (
+                  <div className="rounded-xl border border-edge bg-input p-3 space-y-3">
+                    <p className="text-[13px] text-lo">
+                      Scan this QR code in your authenticator app, then enter a 6-digit code to enable.
+                    </p>
+                    {mfaQrDataUrl ? (
+                      <img
+                        src={mfaQrDataUrl}
+                        alt="Authenticator QR code"
+                        className="w-40 h-40 rounded-lg border border-edge bg-white p-2"
+                      />
+                    ) : (
+                      <p className="text-[12px] text-dim">Generating QR code...</p>
+                    )}
+                    <p className="text-[12px] text-dim break-all">Manual code: {mfaSetup.secret}</p>
+                    <div className="flex gap-2 flex-wrap">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={mfaCode}
+                        onChange={(event) => setMfaCode(event.target.value)}
+                        placeholder="6-digit code"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-xl px-3.5 py-2.5 outline-none focus:border-accent-edge transition-colors"
+                      />
+                      <button
+                        onClick={handleMfaEnable}
+                        disabled={mfaBusy}
+                        className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-accent border-accent-edge bg-accent-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {mfaBusy ? 'Enabling...' : 'Enable 2FA'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {mfaStatus?.mfaEnabled && (
+                  <div className="rounded-xl border border-edge bg-input p-3 space-y-2">
+                    <p className="text-[13px] text-lo">
+                      To disable 2FA, enter a current authenticator code.
+                    </p>
+                    <div className="flex gap-2 flex-wrap">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        maxLength={6}
+                        value={mfaCode}
+                        onChange={(event) => setMfaCode(event.target.value)}
+                        placeholder="6-digit code"
+                        className="bg-card border border-edge text-hi text-[14px] rounded-xl px-3.5 py-2.5 outline-none focus:border-accent-edge transition-colors"
+                      />
+                      <button
+                        onClick={handleMfaDisable}
+                        disabled={mfaBusy}
+                        className="px-4 py-2.5 rounded-xl text-[15px] font-medium border text-err border-err-edge bg-err-soft hover:opacity-90 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {mfaBusy ? 'Disabling...' : 'Disable 2FA'}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
