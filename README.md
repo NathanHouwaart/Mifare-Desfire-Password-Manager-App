@@ -1,48 +1,81 @@
-# Electron C++ Template
+# SecurePass — NFC Password Manager
 
-A clean, modern, and highly reusable template for building Electron applications with native C++ addons.
+A hardware-backed password manager that uses a **MIFARE DESFire EV2 NFC card** as a physical security key. Every password is encrypted with a key derived from both the card and the host machine — a stolen card or a stolen machine alone cannot decrypt anything.
 
 ## Features
-- **Electron & Vite**: Fast frontend tooling with React 19 and Tailwind CSS v4.
-- **Native C++ Addons**: Pre-configured with `cmake-js` and `node-addon-api` (N-API).
-- **Clean Architecture**: Pure C++ logic is strictly separated from V8/N-API bindings.
-- **End-to-End Type Safety**: Fully typed IPC bridge between React and the Electron main process.
-- **Cross-Platform CI/CD**: GitHub Actions workflow included for building on Windows, Mac, and Linux.
+
+- **Two-factor hardware security**: Each entry key requires the physical NFC card _and_ the machine secret stored in the OS keychain (DPAPI / Keychain / libsecret).
+- **AES-256-GCM encryption**: All vault entries are encrypted with authenticated encryption; tampered ciphertexts are detected and rejected.
+- **Zero key-at-rest**: No key material is ever written to disk or sent to the renderer process; all ephemeral keys are zeroized immediately after use.
+- **Password generator**: Configurable rules for length, character classes, and entropy.
+- **Optional remote sync**: Pull/push encrypted blobs to a self-hosted sync server; plaintext never leaves the device.
+- **Lock screen**: PIN-protected inactivity lock (PBKDF2-SHA-256, 200 000 iterations).
+- **Vault export / import**: Portable encrypted backup — readable only with the original card and machine.
+- **Cross-platform**: Windows, macOS, and Linux (CI builds `.exe`, `.dmg`, `.deb`).
+- **Browser extension**: Optional native-messaging host for web credential fill.
+
+## Security Architecture
+
+See [`docs/SECURITY_ARCHITECTURE.md`](docs/SECURITY_ARCHITECTURE.md) for a full description of the threat model, key-derivation hierarchy, DESFire initialisation sequence, and memory-hygiene guarantees.
+
+## Hardware Requirements
+
+| Component | Specification |
+|-----------|--------------|
+| NFC reader | PN532 connected via UART (USB–serial adapter, CP210x driver on Windows) |
+| NFC card | MIFARE DESFire EV2 (ISO 14443-A, AES-capable) |
 
 ## Prerequisites
-To compile the native C++ addon, your system needs:
-- **Node.js** (v20.19+ or v22.12+ recommended)
+
+To build the native C++ addon, your system needs:
+
+- **Node.js** v20.19+ or v22.12+
 - **Python 3**
-- **CMake**
-- **C++ Compiler**:
-  - *Windows*: Visual Studio with Desktop development with C++ workload.
-  - *Mac*: Xcode Command Line Tools (`xcode-select --install`).
-  - *Linux*: GCC/G++ and Make (`sudo apt install build-essential`).
+- **CMake** 3.15+
+- **C++ compiler**:
+  - *Windows*: Visual Studio — "Desktop development with C++" workload
+  - *macOS*: Xcode Command Line Tools (`xcode-select --install`)
+  - *Linux*: GCC/G++ and Make (`sudo apt install build-essential`)
 
 ## Getting Started
 
-1. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-2. **Build the C++ Addon**:
-   ```bash
-   npm run build:addon
-   ```
-3. **Start the Development Server**:
-   ```bash
-   npm run dev
-   ```
+```bash
+# 1. Install dependencies (also rebuilds the native addon for your Electron version)
+npm install
+
+# 2. Build the C++ NFC addon
+npm run build:addon
+
+# 3. Start the development server
+npm run dev
+```
+
+## Building for Distribution
+
+```bash
+npm run dist:linux   # → dist/SecurePass-*.deb
+npm run dist:win     # → dist/SecurePass-Setup-*.exe
+npm run dist:mac     # → dist/SecurePass-*.dmg  (arm64)
+```
+
+## Running Tests & Linting
+
+```bash
+npm test       # Vitest unit tests
+npm run lint   # ESLint
+```
 
 ## Project Structure
-- `native/MyLibrary/src` & `inc`: Your pure C++ logic. Unaware of Node.js.
-- `native/MyLibrary/bindings`: The N-API wrappers that expose your C++ to JavaScript.
-- `src/electron`: Electron main process and preload scripts.
-- `src/ui`: React frontend.
-- `src/types`: Shared TypeScript definitions for IPC.
 
-## How to Rename the Addon
-If you want to change the name from `myaddon` to something else:
-1. Update `project(myaddon ...)` in `CMakeLists.txt`.
-2. Update `NODE_API_MODULE(myaddon, Init)` in `native/RegisterModules.cc`.
-3. Update the paths in `src/electron/bindings.ts` and `src/types/myaddon.d.ts`.
+```
+src/
+  electron/         Main process: IPC handlers, key derivation, vault CRUD, NFC bindings
+  ui/               React + Tailwind frontend (pages, components, hooks)
+  types/            Shared TypeScript IPC definitions
+native/
+  core/             Pure C++ business logic (no Node.js dependency)
+  adapters/         Hardware driver (PN532 UART)
+  bindings/         N-API wrappers that expose C++ to JavaScript
+tests/              Vitest unit tests
+docs/               Architecture and security documentation
+```

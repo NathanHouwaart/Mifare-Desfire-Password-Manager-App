@@ -537,7 +537,7 @@ values, not any key material.
 | ChangeKey command | AES-128 (session key) | 128 bits | Always Encrypted per DESFire spec ; new key wrapped in session key |
 | Entry encrypt / decrypt | AES-256-GCM | 256 bits | IV = 12 B random ; auth tag = 16 B |
 | Machine secret storage | OS safeStorage | 32 bytes | DPAPI (Windows), Keychain (macOS), libsecret (Linux) |
-| PIN hashing (lock screen) | SHA-256 | — | Browser `crypto.subtle.digest` ; stored in `localStorage` |
+| PIN hashing (lock screen) | PBKDF2-SHA-256 | — | Browser `crypto.subtle.deriveBits` ; 200 000 iterations ; 16-byte random salt ; stored as `v2:<salt>:<key>` in `localStorage` |
 
 ---
 
