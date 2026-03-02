@@ -4,20 +4,77 @@
 > _"How much does my 2FA for server sync login actually improve security if the
 > only thing I ask for is a PIN code?  Is that good?  Or do I need the user to
 > re-enter authentication every day or something?"_
+>
+> A follow-up question is also answered in
+> [§ 0](#0-what-is-the-sync-account-password-in-the-code):
+> _"What does 'use a strong password' mean for my code?  The user already
+> provides a username and password.  Is that not the sync account password?"_
 
 ---
 
 ## Table of Contents
 
-1. [What the sync account actually protects](#1-what-the-sync-account-actually-protects)
-2. [The two layers of protection to keep separate in your mind](#2-the-two-layers-of-protection-to-keep-separate-in-your-mind)
-3. [PIN as a password — why it matters here more than usual](#3-pin-as-a-password--why-it-matters-here-more-than-usual)
-4. [How much does TOTP MFA actually help?](#4-how-much-does-totp-mfa-actually-help)
-5. [Re-authentication frequency — do you need daily re-auth?](#5-re-authentication-frequency--do-you-need-daily-re-auth)
-6. [Concrete recommendations](#6-concrete-recommendations)
-7. [Summary table](#7-summary-table)
+1. [What is the sync account password in the code?](#0-what-is-the-sync-account-password-in-the-code)
+2. [What the sync account actually protects](#1-what-the-sync-account-actually-protects)
+3. [The two layers of protection to keep separate in your mind](#2-the-two-layers-of-protection-to-keep-separate-in-your-mind)
+4. [A weak sync password — why it matters here more than usual](#3-a-weak-sync-password--why-it-matters-here-more-than-usual)
+5. [How much does TOTP MFA actually help?](#4-how-much-does-totp-mfa-actually-help)
+6. [Re-authentication frequency — do you need daily re-auth?](#5-re-authentication-frequency--do-you-need-daily-re-auth)
+7. [Concrete recommendations](#6-concrete-recommendations)
+8. [Summary table](#7-summary-table)
 
 ---
+
+## 0. What is the sync account password in the code?
+
+**Yes — the sync account password is exactly the `password` field the user
+types in the Settings → Sync registration / login form.**  There is no
+separate passphrase.
+
+Here is the precise code path, starting from the UI:
+
+```
+SyncSetupFlow.tsx
+  <input type="password" value={password} …>
+  → window.electron['sync:register']({ password })
+  → window.electron['sync:login']({ password, mfaCode })
+```
+
+That same `password` value is handled in `syncHandlers.ts`:
+
+```typescript
+// syncHandlers.ts  (sync:register handler, simplified)
+const status = await registerSync(payload.password);     // ① authenticates to the API
+const mode  = await prepareVaultKeyWithPassword(payload.password);  // ② wraps the key envelope
+
+// syncHandlers.ts  (sync:login handler, simplified)
+const status = await loginSync(payload.password, payload.mfaCode);  // ① authenticates
+const mode  = await prepareVaultKeyWithPassword(payload.password);  // ② unwraps the key envelope
+```
+
+And `prepareVaultKeyWithPassword` calls into `vaultKeyManager.ts`:
+
+```typescript
+// vaultKeyManager.ts
+const wrapKey = crypto.scryptSync(passphrase, salt, 32, { N:32768, r:8, p:1 });
+// wrapKey is then used to AES-256-GCM encrypt/decrypt machineSecret
+```
+
+**So the password the user types is used for two completely independent purposes
+at the same time:**
+
+| Purpose | Where | What it protects |
+|---------|-------|-----------------|
+| ① API login credential | Sent to `/v1/auth/login` (or `/register`), hashed with **Argon2id** server-side | Who can call the sync API |
+| ② Key-envelope passphrase | Used locally as the **scrypt** input to wrap/unwrap `machineSecret` | Confidentiality of the key envelope if the database is stolen |
+
+These two uses have very different security requirements.  Purpose ① is
+protected by the server's rate limiter, TOTP, and the Argon2id hash, so even
+a shorter password is hard to crack online.  Purpose ② happens entirely
+offline in an attacker's hands — the scrypt envelope they downloaded from the
+database is theirs to crack at any speed they choose.  **That is why password
+strength matters: for Purpose ②, only the entropy of the password stands
+between the attacker and `machineSecret`.**
 
 ## 1. What the sync account actually protects
 
@@ -56,7 +113,11 @@ the local PIN.
 
 ---
 
-## 3. PIN as a password — why it matters here more than usual
+## 3. A weak sync password — why it matters here more than usual
+
+The first part of this document explained *what* the sync password does.  This
+section quantifies *how bad* it is to use a weak one, such as a short numeric
+code or any password that can be guessed from a small space of candidates.
 
 ### 3.1 Entropy comparison
 
@@ -67,13 +128,14 @@ the local PIN.
 | 8-character alphanumeric | 218 340 105 584 896 | ~47 bits |
 | Random 20-char password | ≫ 10²⁸ | ~94 bits |
 
-A 6-digit PIN has 1 million possible values.  On a modern GPU, Argon2id at
-moderate parameters can be tested at thousands of candidates per second in an
-offline attack.  A 6-digit PIN space is exhausted in **minutes to hours** offline.
+A short/guessable sync password has 1 million or fewer possible values.  On a
+modern GPU, scrypt at the parameters used in this codebase (`N=32768, r=8, p=1`)
+can be tested at hundreds to thousands of candidates per second in an offline
+attack.  A small password space is exhausted in **minutes to hours** offline.
 
 ### 3.2 The offline attack path against the key envelope
 
-Here is the specific attack that a weak PIN enables:
+Here is the specific attack that a weak sync password enables:
 
 ```
 1.  Attacker steals the PostgreSQL database dump
@@ -82,9 +144,9 @@ Here is the specific attack that a weak PIN enables:
 2.  Attacker downloads user_key_envelopes row:
     { kdf: 'scrypt-v1', kdfParams: { N, r, p }, salt, nonce, ciphertext, authTag }
 
-3.  Attacker brute-forces account password offline:
-    for each candidate PIN:
-        dk = scrypt(candidate, salt, N, r, p)
+3.  Attacker brute-forces the sync account password offline:
+    for each candidate:
+        dk = scrypt(candidate, salt, N=32768, r=8, p=1)
         try AES-256-GCM.decrypt(dk, nonce, ciphertext)
         if authTag verifies → password found
 
@@ -97,28 +159,28 @@ Here is the specific attack that a weak PIN enables:
 6.  Without the card, the vault entries are still unreadable.
 ```
 
-**Key takeaway:** A weak PIN enables the attacker to extract `machineSecret`
-from the envelope.  However, `machineSecret` alone is not enough to decrypt
-vault entries — the NFC card is still required.  So the vault contents remain
-protected even if the PIN is cracked.
+**Key takeaway:** A weak sync password enables the attacker to extract
+`machineSecret` from the envelope.  However, `machineSecret` alone is not
+enough to decrypt vault entries — the NFC card is still required.  So the
+vault contents remain protected even if the password is cracked.
 
-### 3.3 Where a weak PIN *does* cause a real problem
+### 3.3 Where a weak password *does* cause a real problem
 
-The PIN being weak matters in a specific combined scenario:
+A weak sync password matters in a specific combined scenario:
 
 - The attacker has **both** the database dump **and** the physical NFC card.
-- With the PIN cracked (giving `machineSecret`) and the card (giving `cardSecret`),
-  they can reconstruct every `entryKey` and decrypt every entry.
+- With the password cracked (giving `machineSecret`) and the card (giving
+  `cardSecret`), they can reconstruct every `entryKey` and decrypt every entry.
 
 Compare this to the strong-password scenario:
 
 - Even with the card, the attacker cannot derive `entryKey` without
-  `machineSecret`, and a strong password keeps the envelope uncrackable.
+  `machineSecret`, and a strong sync password keeps the envelope uncrackable.
 
-**Verdict:** A PIN is weakest when the attacker also has physical access to
-your NFC card.  For a personal vault where both the database and the card are
-unlikely to be in the same attacker's hands simultaneously, the practical risk
-is low.  For shared/team vaults the risk is higher.
+**Verdict:** A weak sync password is most dangerous when the attacker also has
+physical access to your NFC card.  For a personal vault where both the database
+and the card are unlikely to be in the same attacker's hands simultaneously,
+the practical risk is low.  For shared/team vaults the risk is higher.
 
 ---
 
@@ -143,19 +205,19 @@ TOTP (the `mfa_code` field accepted at `/v1/auth/login`) requires a valid
 It is no protection at all against an attacker who already has a copy of the
 database.
 
-### 4.2 What this means for the "PIN + TOTP" combination
+### 4.2 What this means for the login + TOTP combination
 
-If the sync account password is a PIN and TOTP is enabled:
+If the sync password is weak and TOTP is enabled:
 
-- **Online**: Very hard to break in.  An attacker must guess the PIN _and_
+- **Online**: Very hard to break in.  An attacker must guess the password _and_
   have the current TOTP code.  The rate limiter (100 requests/minute by
-  default) means a 6-digit PIN takes roughly 10 000 minutes ≈ 7 days of
-  sustained online brute force, and each attempt also requires a valid TOTP
+  default) means a small password space takes roughly 10 000 minutes ≈ 7 days
+  of sustained online brute force, and each attempt also requires a valid TOTP
   code.  In practice, online attacks are blocked.
 
 - **Offline** (database compromised): TOTP plays no role.  The attacker
-  brute-forces the PIN directly against the key envelope (scrypt), no login
-  required.  With a 6-digit PIN, this is fast.
+  brute-forces the password directly against the key envelope (scrypt), no
+  login required.  With a weak password, this is fast.
 
 ### 4.3 The honest verdict
 
@@ -229,17 +291,36 @@ improving the protection of vault contents.
 
 ### 6.1 On password strength (most important)
 
-**Do not use a PIN as the sync account password.**  Use a real password of at
-least 16 characters, ideally randomly generated.
+**The sync account password — the one the user types in the Settings → Sync
+login form — is used as the scrypt input to wrap and unwrap `machineSecret`.**
+This is the same field that is also sent to the server for API authentication.
+There is no separate passphrase; one value does both jobs.
 
-The reason is specifically the **key envelope**: the envelope is scrypt-wrapped
-with the account password.  A PIN can be cracked offline in minutes.  A random
-16-character password would take longer than the age of the universe to brute
-force at current GPU speeds.
+Because this password directly governs the security of the key envelope, it
+needs to be strong enough that an offline attacker cannot guess it from the
+scrypt-wrapped blob.
 
-The `passwordSchema` in the server already enforces a minimum of 10 characters.
-If you want to be explicit, you could raise the minimum to 16 characters and
-document why.
+Use a real password of at least 16 characters, ideally randomly generated (use
+the built-in password generator or a password manager).  Do not use a short
+numeric code or any word that appears in a dictionary.
+
+The minimum length enforced by `passwordSchema` in `sync-server/src/routes/auth.ts`
+is currently 10 characters.  Ten characters is sufficient to reject trivially
+short passwords, but a 10-character alphanumeric password still has relatively
+low entropy compared to a randomly generated 16-character one.
+
+A concrete comparison of offline crack time against the scrypt parameters used
+(`N=32768, r=8, p=1`):
+
+| Password type | Example | Approximate offline crack time |
+|--------------|---------|-------------------------------|
+| 6-digit numeric | `490823` | Seconds |
+| 10 random alphanumeric | `Kp3xR7mQwN` | Hours to days |
+| 16 random alphanumeric | `Kp3xR7mQwNvY2j8Z` | Longer than a human lifetime |
+| Random passphrase (4+ words) | `stove-lemon-roof-camera` | Longer than a human lifetime |
+
+The password generator in the app already produces 16-character random strings.
+Direct the user there during sync registration.
 
 ### 6.2 On TOTP MFA
 
@@ -276,8 +357,9 @@ for a strong sync account password.
 
 | Question | Answer |
 |----------|--------|
-| Is a PIN as the sync account password good enough? | **No.** A PIN can be brute-forced offline against the scrypt key envelope in minutes. Use a 16+ character random password. |
-| Does TOTP meaningfully improve security over a PIN-only login? | **Yes, for online attacks.** It blocks brute-force and credential-stuffing at the login endpoint. It provides zero protection against offline envelope cracking. |
+| What is the sync account password? | **The `password` field the user types in Settings → Sync registration/login.** It is sent to the API server for login and is also used locally as the scrypt KDF input to wrap/unwrap `machineSecret`. |
+| Is a weak or short password good enough? | **No.** A weak password can be brute-forced offline against the scrypt key envelope in minutes to hours. Use a 16+ character randomly generated password. |
+| Does TOTP meaningfully improve security over a weak-password-only login? | **Yes, for online attacks.** It blocks brute-force and credential-stuffing at the login endpoint. It provides zero protection against offline envelope cracking. |
 | Do you need daily re-authentication? | **No.** 30-day refresh tokens are appropriate for a personal VPN-gated server. The vault still requires an NFC card tap per operation. |
 | If TOTP is enabled with a strong password, is the sync auth solid? | **Yes.** Strong password defeats offline envelope attacks; TOTP defeats online login attacks. The combination is good. |
-| What is the most important single improvement you can make? | Use a randomly generated, strong (16+ char) account password. That protects the key envelope. TOTP is the second priority. |
+| What is the most important single improvement you can make? | Use a randomly generated, strong (16+ char) password in the sync setup flow. That protects the key envelope. TOTP is the second priority. |
