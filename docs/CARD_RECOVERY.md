@@ -202,3 +202,179 @@ The recommended implementation order when you are ready to build:
    card without starting over, as long as they still have the original card.
 3. **Recovery passphrase (Option A)** — only if users specifically ask for it
    and accept the explicit trade-off disclosure.
+
+---
+
+## Detailed design for Option C
+
+This section answers the follow-up questions: _when_ can a user make a backup
+card, _how many_ cards can you have, and _can you clone at any time?_
+
+---
+
+### When can the user create a backup card?
+
+There are **three moments** where creating a backup card makes sense, each with
+different trade-offs:
+
+#### Moment 1 — During initial vault setup (recommended)
+
+Before the vault is initialised, `cardSecret` is generated fresh in memory and
+has not yet been written anywhere.  This is the ideal moment to write it to two
+(or more) cards in a single setup flow.
+
+```
+App first run
+   │
+   ▼
+"Would you like to create a backup card now?  You can also do this later."
+[Yes, set up backup card]  [Skip for now]
+   │
+   ▼  (if Yes)
+"Tap your PRIMARY card"   ──► initialise Card A with new cardSecret + UID_A keys
+   │
+   ▼
+"Tap your BACKUP card"    ──► initialise Card B with SAME cardSecret + UID_B keys
+   │
+   ▼
+Both cards operational.  Store Card B somewhere safe.
+```
+
+**Why this is easiest:** `cardSecret` is a fresh random value in memory and
+does not yet require a card tap to recover.  No extra DESFire round-trip is
+needed to read it back from Card A before writing it to Card B.
+
+#### Moment 2 — Any time the original card is available ("Add backup card")
+
+After the vault is already set up, you can create a backup card at any time —
+as long as you physically have the original card.  The app:
+
+1. Taps the original card → reads `cardSecret` (same read flow as a normal
+   vault unlock — `readKey` is derived from the current UID, authentication
+   passes, `cardSecret` is read from File 00).
+2. Taps the blank new card → runs the standard initialisation sequence, but
+   uses the _recovered_ `cardSecret` instead of generating a fresh one.
+
+There is **no time limit** on this.  You can add a backup card a year after
+setting up the vault.  It is exactly equivalent to having set up two cards from
+day one.
+
+#### Moment 3 — After losing the primary card (using the backup as the source)
+
+If the primary card is gone, the backup card _becomes_ the primary.  You can
+then create a _new_ backup card from it using the same "Add backup card" flow
+(tap the existing backup → read `cardSecret` → tap the new blank card →
+initialise with that `cardSecret`).
+
+---
+
+### Can you have more than two cards?
+
+**Yes.**  The architecture supports any number of registered cards.  All cards
+share the same `cardSecret`; each card's DESFire access keys
+(`appMasterKey`, `readKey`) are derived independently from its own UID, so each
+card is a completely separate hardware token.
+
+#### Practical recommendation: two cards is the right number for most people
+
+| Number of cards | Assessment |
+|-----------------|-----------|
+| 1 | The current state — no recovery. If it is lost or breaks, the vault is gone. |
+| **2 (primary + 1 backup)** | **The sweet spot.** Simple to manage, covers loss/damage of one card. |
+| 3+ | Useful for teams or shared household accounts. More cards = more surface area if one is stolen, but the threat is low (an attacker also needs the machine). |
+
+For a personal/single-user vault, **two cards** (one always on you, one locked
+away at home or in a safe) is the standard recommendation used by every major
+hardware security key vendor.
+
+---
+
+### What happens if a card is lost or stolen?
+
+This is the key question.  The answers differ depending on whether the attacker
+also has access to the machine.
+
+| Scenario | Risk to vault |
+|----------|--------------|
+| Card A is lost, attacker does NOT have the machine | **Zero.** Card A's access keys require `machineSecret` to derive, which lives in OS secure storage.  Without the machine, Card A is useless hardware. |
+| Card A is lost, attacker DOES have the machine | **High.** Attacker can derive Card A's `readKey` (because they have `machineSecret` + UID_A), read `cardSecret`, and decrypt every entry.  This is the same risk you accept on day one with any two-factor system — if both factors are compromised simultaneously, the vault is compromised. |
+| Card A is stolen AND machine is compromised | Emergency: format the vault or change all passwords immediately.  Any NFC+machine combination unlocks the vault at this point. |
+
+> If you use two cards and lose Card A, you should add a fresh backup card (from
+> Card B, using Moment 3 above) as soon as possible.  That does not change any
+> keys or ciphertexts — it just gives you redundancy again.
+
+---
+
+### Can you "revoke" a lost card?
+
+This is a subtle point.  Revoking Card A means the app should refuse to accept
+it, even though it has a valid `cardSecret`.  The current architecture has **no
+revocation mechanism** — any card with the correct `cardSecret` will always
+succeed in decrypting entries (via `entryKey`, which does not involve the card
+UID).
+
+If revocation becomes a requirement (e.g., shared vaults where an individual
+member leaves), the right approach is to **rotate `cardSecret`**:
+
+1. Tap any valid card → read old `cardSecret`.
+2. Generate a new `cardSecret`.
+3. Re-encrypt every entry with new entry keys (`HKDF(new cardSecret ‖ …)`).
+4. Initialise all _trusted_ cards with the new `cardSecret`.
+5. The revoked card now holds an obsolete `cardSecret` and cannot decrypt anything.
+
+This is a significant operation (re-encrypts the entire vault) and is not
+needed for the personal/single-user use case (if you lose Card A, the attacker
+still does not have the machine).  It is mentioned here as a design note for
+the future.
+
+---
+
+### Recommended UX flows (when you are ready to implement)
+
+#### Flow 1 — Setup-time (new vault)
+
+```
+Screen: "Set up your vault"
+  ├─ [New vault — tap primary card]
+  │    ├─ Initialise Card A  (generate fresh cardSecret, derive UID_A keys)
+  │    └─ "Would you like to add a backup card?"
+  │         ├─ [Yes] → "Tap backup card" → Initialise Card B (same cardSecret, derive UID_B keys)
+  │         └─ [Skip] → Done (user can add backup later via Settings)
+  └─ [Existing vault — tap card to unlock]
+```
+
+#### Flow 2 — Post-setup (Settings → Card Management → Add backup card)
+
+```
+1. "Tap your CURRENT card to verify"
+      │
+      ▼  (reads cardSecret, same as normal vault unlock)
+2. "Tap the NEW blank card"
+      │
+      ▼  (runs initialisation sequence with recovered cardSecret)
+3. "Backup card ready.  Store it somewhere safe."
+```
+
+#### Flow 3 — Emergency replace (Lost primary, using backup)
+
+```
+1. User logs in normally with Card B (the backup — vault works fine).
+2. Settings → Card Management → "Add replacement card"
+3. "Tap Card B again to verify"  (reads cardSecret from backup)
+4. "Tap new blank card"          (initialises with same cardSecret)
+5. New card is now the primary; user has a new backup slot to fill.
+```
+
+---
+
+### Summary answers
+
+| Question | Answer |
+|----------|--------|
+| When to create a backup card? | Best: at initial setup. Also valid: any time the original card is available. |
+| Multiple cards supported? | Yes — any number.  Two is the practical sweet spot. |
+| Can you clone at any time? | Yes, as long as the source card is physically available. |
+| Can you create a backup after losing the primary? | No — you need to read `cardSecret` from a working card first. This is why the backup must be created _before_ the primary is lost. |
+| Does adding cards weaken security? | No.  Each card is an independent hardware token.  Adding a card does not change any keys or ciphertexts. |
+| Can you revoke a lost card? | Not with the current design.  For personal use this is acceptable (attacker also needs the machine).  Revocation requires a full `cardSecret` rotation if needed in the future. |
