@@ -325,8 +325,8 @@ member leaves), the right approach is to **rotate `cardSecret`**:
 
 This is a significant operation (re-encrypts the entire vault) and is not
 needed for the personal/single-user use case (if you lose Card A, the attacker
-still does not have the machine).  It is mentioned here as a design note for
-the future.
+still does not have the machine).  See the full design analysis in the
+[Card Revocation](#card-revocation--design-analysis) section below.
 
 ---
 
@@ -378,3 +378,255 @@ Screen: "Set up your vault"
 | Can you create a backup after losing the primary? | No — you need to read `cardSecret` from a working card first. This is why the backup must be created _before_ the primary is lost. |
 | Does adding cards weaken security? | No.  Each card is an independent hardware token.  Adding a card does not change any keys or ciphertexts. |
 | Can you revoke a lost card? | Not with the current design.  For personal use this is acceptable (attacker also needs the machine).  Revocation requires a full `cardSecret` rotation if needed in the future. |
+
+---
+
+## Card Revocation — Design Analysis
+
+> **No code has been changed.** This section is a forward-looking design
+> document explaining what revocation would require and when it is worth building.
+
+---
+
+### Why would you want card revocation?
+
+Before deciding _how_ to build revocation, it is worth understanding the
+scenarios that make it valuable — because for a personal single-user vault the
+answer is often "you don't need it at all".
+
+#### Scenario 1 — Personal vault, card lost but machine is safe
+
+The attacker has Card A but not your machine.
+
+Without the machine, they cannot derive Card A's `readKey`
+(`HKDF(machineSecret ‖ UID_A, …)`), so they cannot authenticate to the
+DESFire application, so they cannot read `cardSecret`, so they cannot decrypt
+anything.
+
+**Verdict: no revocation needed.** The card is useless without the machine.
+Just add a replacement card from your backup (see Moment 3 in the backup-card
+design above) and carry on.
+
+#### Scenario 2 — Personal vault, card AND machine are both compromised
+
+Both factors have been obtained.  The attacker already has everything they
+need to decrypt the vault right now.  Revoking the card after the fact does
+not undo the compromise — the passwords have already been readable.
+
+**Verdict: the right response is to change all the passwords**, not to rotate
+the card secret.  Revocation cannot retroactively fix a breach.
+
+#### Scenario 3 — Shared vault (family / team)
+
+Multiple people each hold a card that was initialised with the same
+`cardSecret`.  One person leaves the team (or their card is confirmed stolen
+in a situation where the machine may also be at risk).  You want to ensure that
+person's card can no longer decrypt vault entries, even if they have the
+machine, because the machine itself may also be shared or accessible.
+
+**Verdict: this is the real use case for revocation.** A shared vault where
+membership changes is the scenario where `cardSecret` rotation is genuinely
+necessary.
+
+#### Scenario 4 — Security hygiene / periodic rotation
+
+Some security policies require periodic key rotation as a hygiene measure,
+regardless of whether a breach has occurred.  This is standard practice for
+server-side secrets (TLS certificates, API keys).  Applying it to card secrets
+is unusual for a personal tool but becomes relevant in corporate or regulated
+environments.
+
+**Verdict: valid but niche.** Not needed for a personal password manager.
+
+---
+
+### Why revocation is hard: the shared-secret problem
+
+The fundamental challenge is that **all cards share the same `cardSecret`**.
+This is what makes the multi-card model work (any card can decrypt any entry),
+but it also means you cannot revoke one card without re-keying all the others.
+
+You cannot simply "block" Card A's UID and keep using Card B as-is.  If you
+block Card A by UID but do not rotate `cardSecret`, Card B still holds the same
+`cardSecret` as Card A.  If an attacker has Card A and knows the old
+`cardSecret` (because they tapped it before you blocked it), they could in
+theory derive `entryKey` values for older entries if they also have or had the
+machine.
+
+True revocation therefore means: **the old `cardSecret` must never be usable
+again**.  The only way to achieve that is to replace every entry's ciphertext
+with a new ciphertext derived from a new `cardSecret`.
+
+---
+
+### What would need to change — layer by layer
+
+#### Layer 1 — Vault database (vault.db)
+
+A new table is needed to track which cards are registered and whether each one
+is trusted or revoked.  This is schema migration **v3**.
+
+```sql
+-- New table (migration v3)
+CREATE TABLE registered_cards (
+  uid          TEXT    PRIMARY KEY,  -- hex UID of the DESFire card
+  label        TEXT    NOT NULL DEFAULT '',  -- user-given name, e.g. "Primary", "Backup safe"
+  registered_at INTEGER NOT NULL,    -- Unix ms
+  status       TEXT    NOT NULL DEFAULT 'trusted'
+                        CHECK(status IN ('trusted', 'revoked'))
+);
+```
+
+Without this table the app has no memory of which cards have ever been
+registered.  Currently it accepts any card whose UID it can derive a valid
+`readKey` for — there is no explicit registry.
+
+The migration would need to be added to the existing migration runner
+(`vault.ts`) alongside the existing v1→v2 migration.
+
+#### Layer 2 — Card authentication gate (cardHandlers.ts / vaultHandlers.ts)
+
+Today the read flow is:
+```
+tap card → derive readKey from UID → authenticate → read cardSecret → decrypt
+```
+
+With a revocation registry, the read flow must become:
+```
+tap card → check UID against registered_cards
+         → if status = 'revoked': reject immediately (do not proceed)
+         → if status = 'trusted':  continue as today
+         → if UID not in table:    reject (unknown card — not registered)
+```
+
+This check is inexpensive (a single SQLite query) and must happen **before**
+the DESFire authentication attempt.  The important consequence is that the
+app would no longer accept _any_ card that happens to carry the right
+`cardSecret` — only explicitly registered, non-revoked UIDs are allowed.
+
+This is a behaviour change: today the app is UID-agnostic at the entry-key
+level.  With a registry it becomes UID-aware.  Existing users who currently
+have only one card would automatically be registered during the first run of
+the migration (their card's UID would need to be recorded).
+
+#### Layer 3 — cardSecret rotation operation (new IPC handler)
+
+This is the core of revocation.  The handler (call it `card:rotateSecret`)
+would perform the following steps:
+
+```
+1.  Tap a TRUSTED card
+    → derive readKey, authenticate, read old cardSecret
+
+2.  Generate new cardSecret (16 random bytes)
+
+3.  For every entry row in vault.db:
+    a.  Derive old entryKey = HKDF(old cardSecret ‖ machineSecret, salt=id)
+    b.  Decrypt ciphertext → plaintext JSON
+    c.  Zeroize old entryKey
+    d.  Derive new entryKey = HKDF(new cardSecret ‖ machineSecret, salt=id)
+    e.  Encrypt plaintext → new ciphertext, new iv, new authTag
+    f.  Write new ciphertext/iv/authTag to a staging column
+    g.  Zeroize new entryKey
+
+4.  In a single SQLite transaction:
+    a.  Swap staging columns → live columns for all entries
+    b.  Mark the revoked card's UID as 'revoked' in registered_cards
+    c.  Commit
+
+5.  Tap each remaining TRUSTED card (one by one)
+    → Re-initialise with new cardSecret (same DESFire init sequence)
+    → Update registered_at timestamp in registered_cards
+
+6.  Zeroize old cardSecret, new cardSecret from memory
+```
+
+The transaction in step 4 is critical for safety.  If the app crashes between
+steps 3 and 4, the staging columns are discarded on the next run and the vault
+is unharmed.  If it crashes after step 4 but before step 5, some trusted cards
+still hold the old `cardSecret` and cannot decrypt the new ciphertexts — this
+is a **degraded state** that would need to be detected and recovered.
+
+#### Layer 4 — Atomicity and crash safety
+
+The rotation touches two independent systems (the SQLite database and the
+physical cards) in sequence.  SQLite can be made atomic; the card taps
+cannot — they are physical operations.
+
+This creates a window of vulnerability:
+```
+[SQLite committed with new ciphertexts]  ← safe point
+[Card re-init tap 1 — success]
+[Card re-init tap 2 — app crash or user walks away]  ← unsafe: Card 2 still has old cardSecret
+```
+
+To handle this safely, the app would need to record the rotation state:
+
+| State | Meaning | Recovery action |
+|-------|---------|----------------|
+| `idle` | No rotation in progress | Normal operation |
+| `rotating` | Ciphertexts replaced, some cards pending re-init | On next launch: prompt user to re-tap pending cards |
+| `complete` | All trusted cards re-initialised | Cleanup, return to idle |
+
+A lightweight approach: store the rotation state in a new `rotation_state`
+row in the database (or a small JSON file in `userData`), updated atomically
+alongside the ciphertext swap.  On app launch, if state is `rotating`, the
+app must present a "complete card rotation" screen before allowing normal use.
+
+#### Layer 5 — Card initialisation (C++ layer, Pn532Adapter.cc)
+
+No changes are needed at the DESFire protocol level.  The existing
+initialisation sequence (`card:init`) already accepts an arbitrary
+`cardSecret` — it just generates a fresh random one today.  To re-initialise
+a card during rotation, the app would call the same init sequence but pass
+the _new_ `cardSecret` instead of a fresh random value.
+
+The key step that would need to be exposed is: "run init with a given
+`cardSecret`", rather than always generating one internally.  Today
+`cardSecret` is generated inside the handler; the rotation flow would need to
+generate it once and pass it through to each card init.  This is a small
+internal refactor at the JavaScript/IPC level only — the C++ DESFire sequence
+itself does not change.
+
+#### Layer 6 — UI (renderer)
+
+New screens required:
+
+| Screen | Purpose |
+|--------|---------|
+| Card Management list | Shows all registered cards with UID (truncated), label, status, registration date |
+| Revoke card | Confirmation dialog: "Revoking Card A will re-encrypt the vault and require you to re-tap all trusted cards.  This cannot be undone.  Continue?" |
+| Rotation progress | Step-by-step progress: "Decrypting entries…", "Re-encrypting entries…", "Tap Card B to re-initialise", "Tap Card C to re-initialise", "Done" |
+| Rotation resume | On launch when state = `rotating`: "You have a pending card rotation.  Tap your trusted cards to complete it." |
+
+The rotation progress screen needs a progress indicator because re-encrypting
+a large vault (hundreds of entries) can take several seconds.
+
+---
+
+### How the app changes in practice
+
+| Behaviour today | Behaviour with revocation |
+|-----------------|--------------------------|
+| Any card with the right `cardSecret` is accepted | Only UIDs in `registered_cards` with status `trusted` are accepted |
+| Adding a new card is invisible to the database | Each new card must be explicitly registered and gets a row in `registered_cards` |
+| Losing a card has no database consequence | Losing a card triggers a revocation flow that rotates all ciphertexts |
+| vault.db has 2 tables (schema_version, entries) | vault.db has 3+ tables (+ registered_cards, + rotation_state) |
+| Card init generates a fresh `cardSecret` every time | Card init can accept an externally supplied `cardSecret` (for re-init during rotation) |
+| No concept of "trusted vs revoked" | Every tap passes a UID check before proceeding |
+
+---
+
+### Should you implement it?
+
+| Use case | Recommendation |
+|----------|---------------|
+| Personal vault, single user | **No.** A stolen card alone is harmless (attacker needs the machine).  The backup-card approach gives all the recovery you need without this complexity. |
+| Personal vault, you are security-conscious and want periodic rotation | **Optional.** The rotation operation itself is sound; the main cost is the UI complexity and crash-safety engineering. |
+| Shared household vault (2–3 trusted family members) | **Borderline.** If a card is lost and you worry the machine may eventually be accessible to the finder, rotation is a reasonable precaution. |
+| Team / workplace vault (multiple people, people leave) | **Yes.** This is the scenario revocation was designed for.  Without it, an ex-team-member with their card and access to the machine can still read the vault indefinitely. |
+
+**Bottom line for a personal vault:** you do not need revocation.  The
+architecture is deliberately simple precisely because it targets the personal
+use case.  If the app evolves into a team tool, revocation becomes a
+first-class requirement and the design above is the correct path.
