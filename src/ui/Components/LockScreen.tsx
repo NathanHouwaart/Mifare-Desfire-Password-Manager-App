@@ -6,11 +6,44 @@ const PIN_SETUP_INTRO_SEEN_KEY = 'app-pin-setup-intro-seen';
 const PIN_LENGTH = 6;
 const NUMBER_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9'] as const;
 
-async function sha256(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
+// PBKDF2-SHA-256 with 200 000 iterations — resistant to brute-force over a
+// 6-digit PIN space.  Stored format: "v2:<salt-hex>:<derived-key-hex>"
+const PBKDF2_ITERATIONS = 200_000;
+const PBKDF2_HASH = 'SHA-256';
+const PBKDF2_KEY_BYTES = 32;
+const PBKDF2_SALT_BYTES = 16;
+
+const toHex = (arr: Uint8Array) =>
+  Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+
+async function hashPin(pin: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(PBKDF2_SALT_BYTES));
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits'],
+  );
+  const derived = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: PBKDF2_HASH },
+    keyMaterial,
+    PBKDF2_KEY_BYTES * 8,
+  );
+  return `v2:${toHex(salt)}:${toHex(new Uint8Array(derived))}`;
+}
+
+async function verifyPin(pin: string, stored: string): Promise<boolean> {
+  if (!stored.startsWith('v2:')) return false;
+  const parts = stored.split(':');
+  if (parts.length !== 3) return false;
+  if (parts[1].length !== PBKDF2_SALT_BYTES * 2) return false;
+  const salt = Uint8Array.from((parts[1].match(/.{2}/g) ?? []).map(b => parseInt(b, 16)));
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits'],
+  );
+  const derived = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: PBKDF2_HASH },
+    keyMaterial,
+    PBKDF2_KEY_BYTES * 8,
+  );
+  return toHex(new Uint8Array(derived)) === parts[2];
 }
 
 interface LockScreenProps {
@@ -19,7 +52,16 @@ interface LockScreenProps {
 }
 
 export const LockScreen = ({ onUnlock, mode = 'auto' }: LockScreenProps) => {
-  const [storedHash] = useState(() => localStorage.getItem(PIN_HASH_KEY));
+  // Stored values without the "v2:" prefix are the old plain SHA-256 format.
+  // Invalidate them so the user is prompted to create a new PIN.
+  const [storedHash] = useState(() => {
+    const raw = localStorage.getItem(PIN_HASH_KEY);
+    if (raw && !raw.startsWith('v2:')) {
+      localStorage.removeItem(PIN_HASH_KEY);
+      return null;
+    }
+    return raw;
+  });
   const isSettingPin = mode === 'setup' || (mode === 'auto' && !storedHash);
 
   const [phase, setPhase] = useState<'enter' | 'confirm'>('enter');
@@ -73,7 +115,7 @@ export const LockScreen = ({ onUnlock, mode = 'auto' }: LockScreenProps) => {
       }
 
       if (entered === firstPin) {
-        const hash = await sha256(entered);
+        const hash = await hashPin(entered);
         localStorage.setItem(PIN_HASH_KEY, hash);
         finishUnlock();
       } else {
@@ -84,8 +126,8 @@ export const LockScreen = ({ onUnlock, mode = 'auto' }: LockScreenProps) => {
       return;
     }
 
-    const hash = await sha256(entered);
-    if (hash === storedHash) finishUnlock();
+    const match = await verifyPin(entered, storedHash ?? '');
+    if (match) finishUnlock();
     else triggerShake('Incorrect PIN - try again');
   }, [finishUnlock, firstPin, isSettingPin, phase, storedHash, triggerShake]);
 

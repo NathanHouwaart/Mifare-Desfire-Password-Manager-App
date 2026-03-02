@@ -20,8 +20,8 @@ let unlockedAt: number | null = null;
 let unlockedKeyVersion: number | null = null;
 
 function assertPassphrase(passphrase: string): void {
-  if (passphrase.length < 10) {
-    throw new Error('Password must be at least 10 characters');
+  if (passphrase.length < 16) {
+    throw new Error('Password must be at least 16 characters');
   }
 }
 
