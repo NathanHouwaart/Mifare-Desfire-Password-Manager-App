@@ -1,14 +1,20 @@
 # Sync Authentication — Security Analysis
 
-> **No code has been changed.** This document answers the questions:
-> _"How much does my 2FA for server sync login actually improve security if the
-> only thing I ask for is a PIN code?  Is that good?  Or do I need the user to
-> re-enter authentication every day or something?"_
->
-> A follow-up question is also answered in
-> [§ 0](#0-what-is-the-sync-account-password-in-the-code):
-> _"What does 'use a strong password' mean for my code?  The user already
-> provides a username and password.  Is that not the sync account password?"_
+> **Code change**: the minimum password length has been raised from 10 → 16
+> characters in the server schema, the client-side key envelope guard, and the
+> registration UI.  See [§ 6.1](#61-on-password-strength-most-important) for
+> the reasoning.
+
+> This document answers three related questions:
+> 1. _"How much does my 2FA for server sync login actually improve security if
+>    the only thing I ask for is a PIN code?  Is that good?  Or do I need the
+>    user to re-enter authentication every day or something?"_
+> 2. _"What does 'use a strong password' mean for my code?  The user already
+>    provides a username and password.  Is that not the sync account password?"_
+>    → [§ 0](#0-what-is-the-sync-account-password-in-the-code)
+> 3. _"If the user provides a strong password AND I protect the server so the
+>    database can't be downloaded — are we good?"_
+>    → [§ 8](#8-strong-password--protected-server--are-we-good)
 
 ---
 
@@ -22,6 +28,7 @@
 6. [Re-authentication frequency — do you need daily re-auth?](#5-re-authentication-frequency--do-you-need-daily-re-auth)
 7. [Concrete recommendations](#6-concrete-recommendations)
 8. [Summary table](#7-summary-table)
+9. [Strong password + protected server — are we good?](#8-strong-password--protected-server--are-we-good)
 
 ---
 
@@ -304,10 +311,13 @@ Use a real password of at least 16 characters, ideally randomly generated (use
 the built-in password generator or a password manager).  Do not use a short
 numeric code or any word that appears in a dictionary.
 
-The minimum length enforced by `passwordSchema` in `sync-server/src/routes/auth.ts`
-is currently 10 characters.  Ten characters is sufficient to reject trivially
-short passwords, but a 10-character alphanumeric password still has relatively
-low entropy compared to a randomly generated 16-character one.
+The minimum length is now enforced at **16 characters** in three places:
+
+| Location | What it enforces |
+|----------|-----------------|
+| `passwordSchema` in `sync-server/src/routes/auth.ts` | Server rejects any registration or login with fewer than 16 characters |
+| `assertPassphrase` in `src/electron/vaultKeyManager.ts` | Client refuses to wrap or unwrap the key envelope with a short passphrase |
+| `handleAuthenticate` in `src/ui/Components/SyncSetupFlow.tsx` | UI shows an error before even contacting the server |
 
 A concrete comparison of offline crack time against the scrypt parameters used
 (`N=32768, r=8, p=1`):
@@ -363,3 +373,92 @@ for a strong sync account password.
 | Do you need daily re-authentication? | **No.** 30-day refresh tokens are appropriate for a personal VPN-gated server. The vault still requires an NFC card tap per operation. |
 | If TOTP is enabled with a strong password, is the sync auth solid? | **Yes.** Strong password defeats offline envelope attacks; TOTP defeats online login attacks. The combination is good. |
 | What is the most important single improvement you can make? | Use a randomly generated, strong (16+ char) password in the sync setup flow. That protects the key envelope. TOTP is the second priority. |
+| Strong password + protected DB — are we good? | **Yes, substantially.** See [§ 8](#8-strong-password--protected-server--are-we-good). |
+
+---
+
+## 8. Strong password + protected server — are we good?
+
+**Short answer: yes, substantially.**  The two controls complement each other
+and together they address every realistic attack path.  Here is exactly why.
+
+### 8.1 What each control defeats
+
+| Control | Attack it defeats | How |
+|---------|------------------|-----|
+| **Strong password (16+ char random)** | Offline envelope crack after DB theft | `scrypt(16-char-random, salt)` takes longer than the age of the universe to brute-force even on a GPU cluster |
+| **Database protected from download** | DB theft itself | If the attacker never gets the `user_key_envelopes` row, there is nothing to crack offline |
+| **TOTP (already implemented)** | Online brute-force of the login endpoint | Rate limiter + TOTP make online guessing impractical regardless of password length |
+| **NFC card required per decrypt** | Attacker with DB dump + `machineSecret` | Even if both controls above fail, vault entries cannot be read without the physical card |
+
+### 8.2 The residual risks (and why they are acceptable)
+
+**If the attacker gets the DB dump but not the card:**
+- They can try to crack the key envelope offline.
+- With a 16-char random password and scrypt at `N=32768`, the expected crack
+  time exceeds the age of the universe even with nation-state GPU resources.
+- **Risk: negligible with a strong password.**
+
+**If the attacker gets the DB dump AND the card:**
+- The only thing stopping them is the password strength (TOTP is irrelevant
+  for offline attacks, as explained in § 4).
+- With a 16-char random password this is still effectively uncrackable.
+- **Risk: negligible with a strong password.**
+
+**If the attacker can reach the login API but not the DB:**
+- TOTP + rate limiter block online guessing.
+- **Risk: negligible with TOTP enabled.**
+
+**If the attacker compromises the server process itself (not just the DB):**
+- They could read tokens from memory, intercept API traffic, etc.
+- This is outside the cryptographic security model of this application.
+- Defence: keep the server patched, run it on a private VPN, limit OS-level
+  access.
+- **Risk: mitigated by server hardening, not by password strength.**
+
+### 8.3 The defence-in-depth view
+
+```
+Layer 1: DB protection (network, VPN, no public internet exposure)
+         → prevents the attacker from ever getting the encrypted blob
+
+Layer 2: Strong password (16+ random chars, enforced by code)
+         → makes offline cracking infeasible even if Layer 1 fails
+
+Layer 3: NFC card required per vault entry decrypt
+         → means even machineSecret alone is useless without the card
+
+Layer 4: TOTP + rate limiter
+         → blocks online guessing at the login endpoint
+```
+
+Any single layer can fail independently without compromising the vault.
+All four layers failing simultaneously requires a remarkably capable and
+persistent attacker.
+
+### 8.4 What "protecting the DB" means in practice
+
+Concretely, for a Raspberry Pi / Portainer setup:
+
+- Run the sync server on **Tailscale or WireGuard** — no public internet
+  exposure.  The DB cannot be downloaded if the network is not reachable.
+- Set **PostgreSQL `pg_hba.conf`** to only allow connections from
+  `127.0.0.1` or the Docker network, not from any external interface.
+- Enable **PostgreSQL logging** so that unexpected `SELECT * FROM
+  user_key_envelopes` queries are visible.
+- Keep the **OS and PostgreSQL up to date** to reduce the risk of RCE or
+  local privilege escalation that could give an attacker shell access.
+
+None of these require code changes to this application.
+
+### 8.5 Conclusion
+
+> **Yes — a 16+ character randomly generated password combined with a
+> well-protected database puts this application in a very strong security
+> posture.**
+>
+> The NFC card requirement is a third independent layer on top of that.
+> An attacker would need to steal the physical card, compromise the DB, AND
+> crack a 16-char random password — all simultaneously.  That is an
+> implausibly high bar for a personal vault on a private VPN.
+

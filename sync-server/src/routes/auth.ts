@@ -19,7 +19,7 @@ interface AuthRouteDeps {
 }
 
 const usernameSchema = z.string().min(3).max(64).regex(/^[A-Za-z0-9_.-]+$/);
-const passwordSchema = z.string().min(10).max(256);
+const passwordSchema = z.string().min(16).max(256);
 const deviceNameSchema = z.string().min(1).max(120).default('desktop');
 const clientIdSchema = z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const mfaCodeSchema = z.string().trim().regex(/^[0-9]{6}$/);

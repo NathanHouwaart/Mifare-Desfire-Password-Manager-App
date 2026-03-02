@@ -461,6 +461,10 @@ export function SyncSetupFlow({
       setMessage({ type: 'err', text: 'Password is required.' });
       return;
     }
+    if (accountMode === 'register' && password.length < 16) {
+      setMessage({ type: 'err', text: 'Password must be at least 16 characters. This protects your key envelope against offline attack.' });
+      return;
+    }
     if (accountMode === 'register' && password !== confirmPassword) {
       setMessage({ type: 'err', text: 'Passwords do not match.' });
       return;
@@ -959,7 +963,7 @@ export function SyncSetupFlow({
                 {accountMode === 'register' && (
                   <div className="space-y-3">
                     <div className="rounded-xl border border-accent-edge bg-accent-soft p-3 text-[12px] text-mid">
-                      Create a sign-in password for this username.
+                      Create a sign-in password for this username. Use at least 16 characters — this password also protects your encrypted key envelope if the server database is ever stolen.
                     </div>
                     <div className="space-y-1.5">
                       <label className="text-[11px] text-dim uppercase tracking-wide block">Password</label>
@@ -967,7 +971,7 @@ export function SyncSetupFlow({
                         type="password"
                         value={password}
                         onChange={(event) => setPassword(event.target.value)}
-                        placeholder="Create account password"
+                        placeholder="Create account password (min 16 chars)"
                         className={inputClass}
                       />
                     </div>
