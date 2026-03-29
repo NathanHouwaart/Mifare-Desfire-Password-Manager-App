@@ -36,10 +36,16 @@ const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twi
 const ZOOM_SHORTCUT_KEYS = new Set(['+', '=', '-', '_', '0', 'Add', 'Subtract', 'NumpadAdd', 'NumpadSubtract']);
 const AUTO_SYNC_INTERVAL_MS = 2 * 60 * 1000;
 const APP_PROTOCOL_SCHEME = 'securepass';
+const WM_DEVICECHANGE = 0x0219;
+const DBT_DEVICEARRIVAL = 0x8000;
+const DBT_DEVICEREMOVECOMPLETE = 0x8004;
+const DBT_DEVNODES_CHANGED = 0x0007;
 
 let autoSyncTimer: NodeJS.Timeout | null = null;
 let autoSyncRunning = false;
 let pendingSyncInvite: SyncInvitePayloadDto | null = null;
+let hotplugCheckInFlight = false;
+let pendingReconnectPort: string | null = null;
 
 if (process.platform === 'win32') {
   // Keep taskbar grouping/icon tied to our explicit app identity.
@@ -242,6 +248,109 @@ function sendLogToRenderer(level: 'info' | 'warn' | 'error', message: string) {
 function nfcLog(level: 'info' | 'warn' | 'error', message: string) {
   console.log(`[NFC-${level.toUpperCase()}] ${message}`);
   sendLogToRenderer(level, message);
+}
+
+function getNfcConnectionState(
+  reason: NfcConnectionStateDto['reason'] = 'startup',
+  message?: string
+): NfcConnectionStateDto {
+  return {
+    connected: connectedPort !== null,
+    port: connectedPort,
+    reason,
+    message,
+  };
+}
+
+function publishNfcConnectionState(
+  reason: NfcConnectionStateDto['reason'],
+  message?: string
+): void {
+  const payload = getNfcConnectionState(reason, message);
+  mainWindow?.webContents.send('nfc:connectionChanged', payload);
+}
+
+function normalizePortIdentifier(port: string): string {
+  return process.platform === 'win32' ? port.toUpperCase() : port;
+}
+
+function readWParamCode(wParam: Buffer): number {
+  // WM_DEVICECHANGE notification IDs fit in the low DWORD.
+  if (!Buffer.isBuffer(wParam) || wParam.length < 4) return 0;
+  return wParam.readUInt32LE(0);
+}
+
+async function handleHotplugDeviceChange(trigger: string): Promise<void> {
+  if (hotplugCheckInFlight) return;
+  if (!connectedPort && !pendingReconnectPort) return;
+  hotplugCheckInFlight = true;
+  try {
+    const ports = await SerialPort.list();
+    const hasPort = (port: string): boolean => {
+      const portId = normalizePortIdentifier(port);
+      return ports.some((entry) => normalizePortIdentifier(entry.path) === portId);
+    };
+
+    // 1) Handle unplug while connected.
+    if (connectedPort) {
+      const openPort = connectedPort;
+      const stillPresent = hasPort(openPort);
+      if (!stillPresent && connectedPort === openPort) {
+        connectedPort = null;
+        pendingReconnectPort = openPort;
+        nfcLog('warn', `Reader disconnected from ${openPort} (${trigger})`);
+        publishNfcConnectionState('device-unplugged', `Reader unplugged: ${openPort}`);
+
+        if (nfcBinding) {
+          try {
+            await nfcBinding.disconnect();
+          } catch {
+            // Best effort: reader is already gone.
+          }
+        }
+      }
+    }
+
+    // 2) Handle replug after unplug.
+    if (!connectedPort && pendingReconnectPort && nfcBinding) {
+      const candidatePort = pendingReconnectPort;
+      if (!hasPort(candidatePort)) return;
+
+      try {
+        const result = await nfcBinding.connect(candidatePort);
+        connectedPort = candidatePort;
+        pendingReconnectPort = null;
+        nfcLog('info', `Reader reconnected on ${candidatePort} (${trigger})`);
+        nfcLog('info', result);
+        publishNfcConnectionState('device-replugged', `Reconnected to ${candidatePort}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Keep pendingReconnectPort so the next device-change event can retry.
+        nfcLog('warn', `Auto-reconnect failed for ${candidatePort}: ${msg}`);
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    nfcLog('warn', `Hotplug verification failed: ${msg}`);
+  } finally {
+    hotplugCheckInFlight = false;
+  }
+}
+
+function installWindowsDeviceChangeHook(win: BrowserWindow): void {
+  if (process.platform !== 'win32') return;
+
+  win.hookWindowMessage(WM_DEVICECHANGE, (wParam) => {
+    const code = readWParamCode(wParam);
+    if (
+      code !== DBT_DEVICEARRIVAL &&
+      code !== DBT_DEVICEREMOVECOMPLETE &&
+      code !== DBT_DEVNODES_CHANGED
+    ) {
+      return;
+    }
+    void handleHotplugDeviceChange(`WM_DEVICECHANGE(0x${code.toString(16)})`);
+  });
 }
 
 async function runBackgroundSync(reason: 'startup' | 'interval'): Promise<void> {
@@ -500,6 +609,7 @@ app.on('ready', async () => {
       zoomFactor: LOCKED_ZOOM_FACTOR,
     }
   });
+  installWindowsDeviceChangeHook(mainWindow);
 
   // Disable pinch/gesture zoom and lock page zoom to a constant value.
   void mainWindow.webContents.setVisualZoomLevelLimits(1, 1).catch((err) => {
@@ -515,6 +625,7 @@ app.on('ready', async () => {
   // Re-apply on lifecycle events that can indirectly alter effective zoom.
   mainWindow.webContents.on('did-finish-load', () => {
     applyLockedZoom(mainWindow);
+    publishNfcConnectionState('startup');
     if (pendingSyncInvite) {
       mainWindow?.webContents.send('securepass:syncInvite', pendingSyncInvite);
     }
@@ -547,6 +658,10 @@ ipcMain.handle('add', async (_event: IpcMainInvokeEvent, a: number, b: number) =
   return result;
 });
 
+ipcMain.handle('nfc:getConnectionState', () => {
+  return getNfcConnectionState('startup');
+});
+
 ipcMain.handle('connect', async (_event: IpcMainInvokeEvent, port: string) => {
   if (!nfcBinding) throw new Error("NFC Binding not initialized");
 
@@ -556,7 +671,9 @@ ipcMain.handle('connect', async (_event: IpcMainInvokeEvent, port: string) => {
   // UI state syncs without touching the hardware.
   if (connectedPort !== null) {
     if (connectedPort === port) {
+      pendingReconnectPort = null;
       nfcLog('info', `Already connected to ${port} — confirming state sync.`);
+      publishNfcConnectionState('manual-connect', `Connected to ${port}`);
       return `Connected to ${port} (already open)`;
     }
     throw Object.assign(
@@ -569,7 +686,9 @@ ipcMain.handle('connect', async (_event: IpcMainInvokeEvent, port: string) => {
   try {
     const result = await nfcBinding.connect(port);
     connectedPort = port;
+    pendingReconnectPort = null;
     nfcLog('info', result);
+    publishNfcConnectionState('manual-connect', `Connected to ${port}`);
     return result;
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -582,9 +701,17 @@ ipcMain.handle('disconnect', async () => {
   if (!nfcBinding) throw new Error("NFC Binding not initialized");
   nfcLog('info', 'Disconnecting...');
   try {
+    pendingReconnectPort = null;
+    const disconnectedPort = connectedPort;
     const result = await nfcBinding.disconnect();
     connectedPort = null;
     nfcLog('info', result ? 'Disconnected successfully' : 'Disconnect returned false');
+    publishNfcConnectionState(
+      'manual-disconnect',
+      disconnectedPort
+        ? `Disconnected from ${disconnectedPort}`
+        : 'Disconnected successfully'
+    );
     return result;
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);

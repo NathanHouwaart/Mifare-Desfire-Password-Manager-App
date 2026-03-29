@@ -125,6 +125,21 @@ export const NfcReaderPage = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const api = (window as Window & { electron?: Window['electron'] }).electron;
+    if (!api || typeof api.onNfcConnectionChange !== 'function') return;
+
+    return api.onNfcConnectionChange((state) => {
+      onConnectionChange(Boolean(state.connected));
+      if (state.message) {
+        setStatusMsg(state.message);
+      }
+      if (!state.connected) {
+        void fetchPorts();
+      }
+    });
+  }, [fetchPorts, onConnectionChange]);
+
   /** Core connection attempt with per-attempt timeout and configurable retries. */
   const connectWithRetry = useCallback(async (targetPort: string) => {
     const timeoutSecs = parseInt(localStorage.getItem('setting-conn-timeout') ?? '10', 10);

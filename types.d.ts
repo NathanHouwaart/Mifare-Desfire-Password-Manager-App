@@ -1,5 +1,11 @@
 type NfcLogEntry = { level: 'info' | 'warn' | 'error'; message: string; timestamp: string };
 type ComPort = { path: string; manufacturer?: string };
+type NfcConnectionStateDto = {
+  connected: boolean;
+  port: string | null;
+  reason?: 'startup' | 'manual-connect' | 'manual-disconnect' | 'device-unplugged' | 'device-replugged';
+  message?: string;
+};
 
 type SelfTestStatus    = 'success' | 'failed' | 'skipped';
 type SelfTestResultDto = { name: string; status: SelfTestStatus; detail: string };
@@ -231,6 +237,7 @@ type SyncUpdateDeviceDto = {
 type RendererEvents = {
   'nfc-log': NfcLogEntry;
   'nfc:selfTestProgress': SelfTestResultDto;
+  'nfc:connectionChanged': NfcConnectionStateDto;
   'securepass:syncInvite': SyncInvitePayloadDto;
 };
 
@@ -240,6 +247,7 @@ type IPCHandlers = {
   add: (a: number, b: number) => Promise<number>;
   connect: (port: string) => Promise<string>;
   disconnect: () => Promise<boolean>;
+  'nfc:getConnectionState': () => Promise<NfcConnectionStateDto>;
   listComPorts: () => Promise<ComPort[]>;
   saveFile: (filename: string, content: string) => Promise<boolean>;
   getFirmwareVersion: () => Promise<string>;
@@ -360,6 +368,7 @@ type ExposedElectronAPI = {
 } & {
   onNfcLog: (callback: (entry: NfcLogEntry) => void) => () => void;
   onSelfTestProgress: (callback: (result: SelfTestResultDto) => void) => () => void;
+  onNfcConnectionChange: (callback: (state: NfcConnectionStateDto) => void) => () => void;
   onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => () => void;
 };
 

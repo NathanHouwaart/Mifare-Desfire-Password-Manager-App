@@ -261,6 +261,33 @@ function App() {
   }, [handleSyncInvite]);
 
   useEffect(() => {
+    const api = (window as Window & { electron?: Window['electron'] }).electron;
+    if (!api) return;
+
+    let unsub: (() => void) | undefined;
+
+    if (typeof api['nfc:getConnectionState'] === 'function') {
+      void api['nfc:getConnectionState']()
+        .then((state) => {
+          setIsNfcConnected(Boolean(state.connected));
+        })
+        .catch(() => {
+          // Ignore startup connection probe failures.
+        });
+    }
+
+    if (typeof api.onNfcConnectionChange === 'function') {
+      unsub = api.onNfcConnectionChange((state) => {
+        setIsNfcConnected(Boolean(state.connected));
+      });
+    }
+
+    return () => {
+      unsub?.();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!pendingSyncInvite) return;
     if (needsOnboarding) return;
     if (!unlocked) return;
