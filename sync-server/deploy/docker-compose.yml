@@ -20,7 +20,7 @@ services:
 
   api:
     build:
-      context: ../../sync-server
+      context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:

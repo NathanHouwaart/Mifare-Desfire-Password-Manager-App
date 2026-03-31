@@ -29,7 +29,7 @@ Lightweight sync API for SecurePass encrypted vault rows.
    - `DATABASE_URL`
    - `JWT_ACCESS_SECRET`
    - `JWT_REFRESH_SECRET`
-   - `BOOTSTRAP_TOKEN` (legacy endpoint only)
+   - `BOOTSTRAP_TOKEN` (used by /v1/auth/bootstrap to create the first account)
 3. Start dev server:
    - `npm run dev`
 
@@ -47,6 +47,6 @@ Lightweight sync API for SecurePass encrypted vault rows.
 - `ACCESS_TOKEN_TTL` default `15m`
 - `REFRESH_TOKEN_TTL` default `30d`
 - `MFA_ISSUER` default `SecurePass`
-- `BOOTSTRAP_TOKEN` required (min 16 chars, legacy bootstrap endpoint)
+- `BOOTSTRAP_TOKEN` required (min 16 chars, used once to create the first account)
 - `RATE_LIMIT_WINDOW_MS` default `60000`
 - `RATE_LIMIT_MAX` default `100`

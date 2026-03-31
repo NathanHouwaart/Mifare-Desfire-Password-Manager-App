@@ -35,4 +35,4 @@ native-host/host-error.log
 
 # Sync server local secrets
 sync-server/.env
-deploy/pi-sync/.env
+sync-server/deploy/.env

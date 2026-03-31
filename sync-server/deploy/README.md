@@ -1,13 +1,13 @@
 # SecurePass Sync Setup (What To Fill In Where)
 
 This guide tells you exactly which values you must fill in:
-- in `deploy/pi-sync/.env`
+- in `sync-server/deploy/.env`
 - in the SecurePass sync wizard inside the app
 
 ## 1. Copy `.env.example` to `.env`
 
 ```bash
-cd /opt/securepass/deploy/pi-sync
+cd /opt/securepass/sync-server/deploy
 cp .env.example .env
 ```
 
@@ -15,7 +15,7 @@ If you get permission errors, use `sudo` and/or fix folder ownership.
 
 ## 2. Fill `.env` values
 
-Open `deploy/pi-sync/.env` and set these:
+Open `sync-server/deploy/.env` and set these:
 
 | Variable | What to fill | Example |
 |---|---|---|
@@ -29,7 +29,7 @@ Open `deploy/pi-sync/.env` and set these:
 | `JWT_ACCESS_SECRET` | Strong random secret, minimum 32 chars | random 48+ chars |
 | `JWT_REFRESH_SECRET` | Another different strong random secret, minimum 32 chars | random 48+ chars |
 | `MFA_ISSUER` | Name shown in authenticator app | `SecurePass` |
-| `BOOTSTRAP_TOKEN` | Legacy token, keep random anyway | random 32+ chars |
+| `BOOTSTRAP_TOKEN` | Used once to create the first account (only works when 0 users exist) | random 32+ chars |
 | `ACCESS_TOKEN_TTL` | Access token lifetime | `15m` |
 | `REFRESH_TOKEN_TTL` | Refresh token lifetime | `30d` |
 | `RATE_LIMIT_WINDOW_MS` | Rate limit window | `60000` |

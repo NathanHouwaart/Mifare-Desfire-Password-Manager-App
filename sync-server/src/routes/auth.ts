@@ -165,7 +165,7 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
     res.json({
       userCount,
       hasUsers,
-      bootstrapped: hasUsers, // Deprecated field kept temporarily for old clients.
+      bootstrapped: hasUsers, // kept for older clients that read this field
     });
   });
 
@@ -251,7 +251,7 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
     }
   });
 
-  // Deprecated: legacy first-user bootstrap flow. Kept temporarily during v2 migration.
+  // First-user bootstrap endpoint. Requires BOOTSTRAP_TOKEN header and only works when 0 users exist.
   router.post('/bootstrap', authLimiter, async (req, res) => {
     if (req.header('x-bootstrap-token') !== config.BOOTSTRAP_TOKEN) {
       res.status(403).json({ error: 'Invalid bootstrap token' });
