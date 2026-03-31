@@ -3,6 +3,9 @@
 The sync server uses per-user, single-use, expiring invite tokens to control
 who can create an account. There is no open self-registration.
 
+By default, only admin users can create/list/revoke invites (`INVITE_CREATION_POLICY=admin`).
+Set `INVITE_CREATION_POLICY=any` if any authenticated account should be able to invite others.
+
 ---
 
 ## How it works
@@ -35,6 +38,8 @@ Content-Type: application/json
 {
   "id": "uuid",
   "token": "64-char hex string — send this to the person",
+  "inviteUrl": "securepass://invite?server=https%3A%2F%2F...&token=...",
+  "serverUrl": "https://your-static-domain.ngrok-free.app",
   "note": "for dad",
   "expiresAt": "2026-04-02T10:00:00.000Z",
   "createdAt": "2026-03-31T10:00:00.000Z"
@@ -43,6 +48,7 @@ Content-Type: application/json
 
 > The `token` field is the only time the raw value is available. Copy it and send it
 > to your family member via a secure channel (Signal, iMessage, etc.).
+> `inviteUrl` includes the same token for one-tap deep-link onboarding.
 
 ---
 
@@ -130,5 +136,7 @@ You                              Dad
   lapses before the person registers.
 - `ALLOW_REGISTRATION=false` in `.env` disables `POST /v1/auth/register` entirely,
   regardless of invite tokens. Use this to lock down the server completely.
+- `INVITE_CREATION_POLICY=admin` (default) limits invite management to admin users.
+- The first account created via bootstrap is automatically marked admin.
 - The first account (yours) is created via `POST /v1/auth/bootstrap` using the
   `BOOTSTRAP_TOKEN` — no invite needed. See [ngrok-deployment.md](./ngrok-deployment.md).

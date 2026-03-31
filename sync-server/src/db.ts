@@ -25,6 +25,7 @@ async function runMigrations(pool: Pool): Promise<void> {
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       username TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
+      is_admin BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
@@ -38,6 +39,24 @@ async function runMigrations(pool: Pool): Promise<void> {
       ADD COLUMN IF NOT EXISTS mfa_pending_created_at TIMESTAMPTZ;
     ALTER TABLE users
       ADD COLUMN IF NOT EXISTS mfa_enrolled_at TIMESTAMPTZ;
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
+
+    -- Migration safety: if upgrading an existing install and no admin exists yet,
+    -- promote the earliest account so invite management keeps an owner.
+    UPDATE users
+       SET is_admin = TRUE
+     WHERE id = (
+       SELECT id
+         FROM users
+        ORDER BY created_at ASC
+        LIMIT 1
+     )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM users
+          WHERE is_admin = TRUE
+       );
 
     CREATE TABLE IF NOT EXISTS devices (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

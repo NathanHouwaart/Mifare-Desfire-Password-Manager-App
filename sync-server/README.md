@@ -6,7 +6,11 @@ Lightweight sync API for SecurePass encrypted vault rows.
 - `GET /v1/health`
 - `GET /v1/invite/link`
 - `GET /v1/invite/open`
+- `POST /v1/invite/create`
+- `GET /v1/invite/list`
+- `DELETE /v1/invite/:id`
 - `GET /v1/auth/status`
+- `GET /v1/auth/me`
 - `POST /v1/auth/register`
 - `POST /v1/auth/bootstrap`
 - `POST /v1/auth/login`
@@ -50,3 +54,8 @@ Lightweight sync API for SecurePass encrypted vault rows.
 - `BOOTSTRAP_TOKEN` required (min 16 chars, used once to create the first account)
 - `RATE_LIMIT_WINDOW_MS` default `60000`
 - `RATE_LIMIT_MAX` default `100`
+- `AUTH_RATE_LIMIT_WINDOW_MS` default `900000`
+- `AUTH_RATE_LIMIT_MAX` default `20`
+- `ALLOW_REGISTRATION` default `true`
+- `INVITE_CREATION_POLICY` default `admin` (`admin` or `any`)
+- `TRUST_PROXY` default `false`

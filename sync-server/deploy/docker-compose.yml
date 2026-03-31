@@ -43,6 +43,7 @@ services:
       TRUST_PROXY: ${TRUST_PROXY:-true}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      INVITE_CREATION_POLICY: ${INVITE_CREATION_POLICY:-admin}
     ports:
       - "${SYNC_BIND_IP:-127.0.0.1}:${SYNC_PORT:-8787}:8787"
     healthcheck:

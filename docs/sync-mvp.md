@@ -25,18 +25,18 @@ This scaffold adds a sync API and deployment stack without changing your current
   - `GET /v1/sync/pull`
   - `GET /v1/sync/cursor`
   - `GET /v1/health`
-- `deploy/pi-sync/docker-compose.yml`
+- `sync-server/deploy/docker-compose.yml`
   - API container
   - PostgreSQL container
-- `deploy/pi-sync/.env.example`
+- `sync-server/deploy/.env.example`
 
 ## Raspberry Pi + Portainer setup
 Detailed field-by-field setup guide:
-- `deploy/pi-sync/README.md`
+- `sync-server/deploy/README.md`
 
-1. Copy `deploy/pi-sync/.env.example` to `deploy/pi-sync/.env`.
+1. Copy `sync-server/deploy/.env.example` to `sync-server/deploy/.env`.
 2. Fill in strong secrets in `.env`.
-3. In Portainer, deploy stack from `deploy/pi-sync/docker-compose.yml`.
+3. In Portainer, deploy stack from `sync-server/deploy/docker-compose.yml`.
 4. Keep `SYNC_BIND_IP=127.0.0.1` if you use Tailscale/WireGuard on host.
 5. Access API over your VPN IP (not open internet).
 

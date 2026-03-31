@@ -55,6 +55,11 @@ PUBLIC_BASE_URL=https://your-static-domain.ngrok-free.app
 # Set to false to block all new registrations entirely.
 # When true, /register requires a valid per-user invite token.
 ALLOW_REGISTRATION=true
+
+# Invite management policy:
+# - admin: only admin users (bootstrap owner) can create/list/revoke invites
+# - any: any authenticated user can manage invites
+INVITE_CREATION_POLICY=admin
 ```
 
 > **Never commit `.env` to git.** It is already in `.gitignore`.
@@ -129,7 +134,7 @@ curl -s -X POST https://your-static-domain.ngrok-free.app/v1/invite/create \
   -d '{"note": "for dad", "expiresIn": "2d"}'
 ```
 
-Send your dad the `token` value from the response. He enters it during registration in the app.
+Send your dad either the `token` (manual entry) or `inviteUrl` (one-tap deep link) from the response.
 
 ---
 

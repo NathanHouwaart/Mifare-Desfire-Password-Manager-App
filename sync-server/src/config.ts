@@ -18,9 +18,9 @@ const envSchema = z.object({
   // Stricter limits applied only to auth endpoints (login, register, refresh)
   AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1000).default(900_000), // 15 min
   AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(20),
-  // If set, anyone with this token can register (share it with family).
-  // If not set and ALLOW_REGISTRATION=true, registration is fully open.
-  // Set ALLOW_REGISTRATION=false to block registration entirely regardless of this token.
+  INVITE_CREATION_POLICY: z.enum(['admin', 'any']).default('admin'),
+  // Set to false to block all new registrations entirely.
+  // When true, /register still requires a valid invite token.
   ALLOW_REGISTRATION: z.coerce.boolean().default(true),
   TRUST_PROXY: z.coerce.boolean().default(false),
 });

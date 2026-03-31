@@ -55,25 +55,45 @@ function inferServerUrlFromRequest(req: Request): string {
   return normalizeServerUrl(`${protocol}://${host}`);
 }
 
-function buildInviteUrl(serverUrl: string, username?: string): string {
+function buildInviteUrl(serverUrl: string, username?: string, inviteToken?: string): string {
   const invite = new URL('securepass://invite');
   invite.searchParams.set('server', serverUrl);
   if (username) invite.searchParams.set('username', username);
+  if (inviteToken) invite.searchParams.set('token', inviteToken);
   return invite.toString();
 }
 
 export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRouteDeps): Router {
   const router = Router();
   const fixedBaseUrl = publicBaseUrl ? normalizeServerUrl(publicBaseUrl) : null;
+  if (config.NODE_ENV === 'production' && !fixedBaseUrl) {
+    throw new Error('PUBLIC_BASE_URL must be set in production for invite links');
+  }
 
-  const buildPayload = (req: Request, username?: string) => {
+  const buildPayload = (req: Request, username?: string, inviteToken?: string) => {
     const serverUrl = fixedBaseUrl ?? inferServerUrlFromRequest(req);
-    const inviteUrl = buildInviteUrl(serverUrl, username);
+    const inviteUrl = buildInviteUrl(serverUrl, username, inviteToken);
     return {
       inviteUrl,
       serverUrl,
       ...(username ? { username } : {}),
     };
+  };
+
+  const assertInviteManagementAllowed = async (userId: string): Promise<void> => {
+    if (config.INVITE_CREATION_POLICY === 'any') return;
+
+    const row = await pool.query<{ is_admin: boolean }>(
+      `SELECT is_admin
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+    if ((row.rowCount ?? 0) === 0 || !row.rows[0].is_admin) {
+      const denied = new Error('Only admin users can manage invites on this server');
+      (denied as Error & { status?: number }).status = 403;
+      throw denied;
+    }
   };
 
   router.get('/link', (req, res) => {
@@ -128,6 +148,8 @@ export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRout
     const expiresAt = new Date(Date.now() + ttlMs);
 
     try {
+      await assertInviteManagementAllowed(req.auth!.sub);
+
       const row = await pool.query<{ id: string; note: string | null; expires_at: Date; created_at: Date }>(
         `INSERT INTO invite_tokens (token_hash, created_by, note, expires_at)
          VALUES ($1, $2, $3, $4)
@@ -135,14 +157,21 @@ export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRout
         [tokenHash, req.auth!.sub, parsed.data.note ?? null, expiresAt]
       );
       const invite = row.rows[0];
+      const payload = buildPayload(req, undefined, rawToken);
       res.status(201).json({
         id: invite.id,
         token: rawToken,
+        inviteUrl: payload.inviteUrl,
+        serverUrl: payload.serverUrl,
         note: invite.note,
         expiresAt: invite.expires_at,
         createdAt: invite.created_at,
       });
     } catch (error) {
+      if (typeof error === 'object' && error !== null && (error as { status?: number }).status === 403) {
+        res.status(403).json({ error: 'Only admin users can manage invites on this server' });
+        return;
+      }
       console.error('[invite/create] failed', error);
       res.status(500).json({ error: 'Failed to create invite token' });
     }
@@ -151,6 +180,8 @@ export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRout
   // GET /v1/invite/list  — view all tokens you have created
   router.get('/list', requireAccessToken(config), async (req, res) => {
     try {
+      await assertInviteManagementAllowed(req.auth!.sub);
+
       const rows = await pool.query<{
         id: string;
         note: string | null;
@@ -176,6 +207,10 @@ export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRout
         })),
       });
     } catch (error) {
+      if (typeof error === 'object' && error !== null && (error as { status?: number }).status === 403) {
+        res.status(403).json({ error: 'Only admin users can manage invites on this server' });
+        return;
+      }
       console.error('[invite/list] failed', error);
       res.status(500).json({ error: 'Failed to list invite tokens' });
     }
@@ -184,6 +219,8 @@ export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRout
   // DELETE /v1/invite/:id  — revoke an unused token
   router.delete('/:id', requireAccessToken(config), async (req, res) => {
     try {
+      await assertInviteManagementAllowed(req.auth!.sub);
+
       const result = await pool.query(
         `DELETE FROM invite_tokens
          WHERE id = $1 AND created_by = $2 AND used_at IS NULL
@@ -196,6 +233,10 @@ export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRout
       }
       res.status(204).end();
     } catch (error) {
+      if (typeof error === 'object' && error !== null && (error as { status?: number }).status === 403) {
+        res.status(403).json({ error: 'Only admin users can manage invites on this server' });
+        return;
+      }
       console.error('[invite/delete] failed', error);
       res.status(500).json({ error: 'Failed to revoke invite token' });
     }

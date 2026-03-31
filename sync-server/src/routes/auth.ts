@@ -122,13 +122,20 @@ function isUniqueViolation(error: unknown): boolean {
 async function createUserSession(
   client: PoolClient,
   config: AppConfig,
-  input: { username: string; password: string; deviceName: string; clientId?: string }
+  input: {
+    username: string;
+    password: string;
+    deviceName: string;
+    clientId?: string;
+    isAdmin?: boolean;
+  }
 ): Promise<NewSession> {
   const passwordHash = await hashPassword(input.password);
   const userResult = await client.query<{ id: string; username: string; mfa_enabled: boolean }>(
-    `INSERT INTO users (username, password_hash) VALUES ($1, $2)
+    `INSERT INTO users (username, password_hash, is_admin)
+     VALUES ($1, $2, $3)
      RETURNING id, username, mfa_enabled`,
-    [input.username, passwordHash]
+    [input.username, passwordHash, Boolean(input.isAdmin)]
   );
 
   const user = userResult.rows[0];
@@ -166,6 +173,33 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
       userCount,
       hasUsers,
       bootstrapped: hasUsers, // kept for older clients that read this field
+    });
+  });
+
+  router.get('/me', requireAccessToken(config), async (req, res) => {
+    const userId = req.auth?.sub;
+    if (!userId) {
+      res.status(401).json({ error: 'Missing auth context' });
+      return;
+    }
+
+    const row = await pool.query<{ id: string; username: string; is_admin: boolean }>(
+      `SELECT id, username, is_admin
+       FROM users
+       WHERE id = $1`,
+      [userId]
+    );
+    if (row.rowCount === 0) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    const me = row.rows[0];
+    res.status(200).json({
+      userId: me.id,
+      username: me.username,
+      isAdmin: Boolean(me.is_admin),
+      inviteCreationPolicy: config.INVITE_CREATION_POLICY,
     });
   });
 
@@ -231,7 +265,10 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
         return;
       }
 
-      const session = await createUserSession(client, config, parsed.data);
+      const session = await createUserSession(client, config, {
+        ...parsed.data,
+        isAdmin: false,
+      });
       await client.query(
         `UPDATE invite_tokens SET used_at = now(), used_by = $1 WHERE id = $2`,
         [session.userId, invite.id]
@@ -274,7 +311,10 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
         return;
       }
 
-      const session = await createUserSession(client, config, parsed.data);
+      const session = await createUserSession(client, config, {
+        ...parsed.data,
+        isAdmin: true,
+      });
       await client.query('COMMIT');
       res.status(201).json(session);
     } catch (error) {

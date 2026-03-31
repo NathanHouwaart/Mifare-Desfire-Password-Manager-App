@@ -34,6 +34,11 @@ Open `sync-server/deploy/.env` and set these:
 | `REFRESH_TOKEN_TTL` | Refresh token lifetime | `30d` |
 | `RATE_LIMIT_WINDOW_MS` | Rate limit window | `60000` |
 | `RATE_LIMIT_MAX` | Max requests per window | `100` |
+| `AUTH_RATE_LIMIT_WINDOW_MS` | Auth route rate-limit window | `900000` |
+| `AUTH_RATE_LIMIT_MAX` | Auth route max attempts per window | `20` |
+| `PUBLIC_BASE_URL` | Public HTTPS URL used in invite links | `https://your-domain.ngrok-free.app` |
+| `ALLOW_REGISTRATION` | Allow new registrations (invite token still required) | `true` |
+| `INVITE_CREATION_POLICY` | Who can create invites (`admin` or `any`) | `admin` |
 
 Quick way to generate secure random values on Linux:
 
@@ -69,6 +74,8 @@ When you click `Use Synced` or `Open Sync Wizard`, fill:
 | `Username` | Sync account username | `nathan` |
 | `Device Name` | Friendly device label | `desktop-main`, `laptop-mac` |
 | `Sync Password` | Account password for sync login/register | your chosen strong password |
+| `Invite Token` | Required when creating an invited account | token from owner |
+| `Bootstrap Token` | Required once on a fresh server with zero users | value of `BOOTSTRAP_TOKEN` |
 | `Authenticator Code` | 6-digit TOTP from app (after MFA setup) | `123456` |
 | `Account Password (for Vault Key)` | Same sync account password, used to prepare/unlock vault key on device | same as `Sync Password` |
 
@@ -76,10 +83,11 @@ When you click `Use Synced` or `Open Sync Wizard`, fill:
 
 1. Open wizard.
 2. Enter `Sync URL`, `Username`, `Device Name`.
-3. Register account with `Sync Password` (or login if account already exists).
-4. Setup MFA and enable it with 6-digit code.
-5. Vault key is prepared automatically from your account password.
-6. Finish wizard.
+3. If this is a fresh server (0 users): bootstrap owner with `Bootstrap Token`.
+4. Otherwise: register with `Sync Password` + `Invite Token` (or login if account already exists).
+5. Setup MFA and enable it with 6-digit code.
+6. Vault key is prepared automatically from your account password.
+7. Finish wizard.
 
 ## 6. Second device flow
 
