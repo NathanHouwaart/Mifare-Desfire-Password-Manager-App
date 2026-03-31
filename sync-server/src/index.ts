@@ -16,6 +16,9 @@ async function main(): Promise<void> {
   const pool = await createPool(config);
 
   const app = express();
+  if (config.TRUST_PROXY) {
+    app.set('trust proxy', 1);
+  }
   app.disable('x-powered-by');
   app.use(helmet());
   app.use(express.json({ limit: '1mb' }));
@@ -36,7 +39,7 @@ async function main(): Promise<void> {
   });
 
   app.use('/v1/auth', registerAuthRoutes({ pool, config }));
-  app.use('/v1/invite', registerInviteRoutes({ publicBaseUrl: config.PUBLIC_BASE_URL }));
+  app.use('/v1/invite', registerInviteRoutes({ pool, config, publicBaseUrl: config.PUBLIC_BASE_URL }));
   app.use('/v1/keys', registerKeyRoutes({ pool, config }));
   app.use('/v1/sync', registerSyncRoutes({ pool, config }));
 

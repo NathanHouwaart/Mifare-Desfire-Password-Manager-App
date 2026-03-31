@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 
@@ -149,6 +150,14 @@ async function createUserSession(
 export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
   const router = Router();
 
+  const authLimiter = rateLimit({
+    windowMs: config.AUTH_RATE_LIMIT_WINDOW_MS,
+    max: config.AUTH_RATE_LIMIT_MAX,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many attempts, please try again later' },
+  });
+
   router.get('/status', async (_req, res) => {
     const row = await pool.query<{ count: number }>('SELECT COUNT(*)::int AS count FROM users');
     const userCount = row.rows[0].count;
@@ -175,17 +184,58 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
     res.status(200).json({ exists: Boolean(row.rows[0]?.exists) });
   });
 
-  router.post('/register', async (req, res) => {
+  router.post('/register', authLimiter, async (req, res) => {
+    if (!config.ALLOW_REGISTRATION) {
+      res.status(403).json({ error: 'Registration is disabled on this server' });
+      return;
+    }
+
+    const rawInviteToken = req.header('x-invite-token')?.trim();
+    if (!rawInviteToken) {
+      res.status(403).json({ error: 'An invite token is required to register' });
+      return;
+    }
+
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten() });
       return;
     }
 
+    const inviteTokenHash = hashRefreshToken(rawInviteToken);
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Lock the invite row to prevent concurrent redemption
+      const tokenRow = await client.query<{ id: string; expires_at: Date; used_at: Date | null }>(
+        `SELECT id, expires_at, used_at FROM invite_tokens WHERE token_hash = $1 FOR UPDATE`,
+        [inviteTokenHash]
+      );
+
+      if ((tokenRow.rowCount ?? 0) === 0) {
+        await safeRollback(client);
+        res.status(403).json({ error: 'Invalid invite token' });
+        return;
+      }
+
+      const invite = tokenRow.rows[0];
+      if (invite.used_at !== null) {
+        await safeRollback(client);
+        res.status(403).json({ error: 'Invite token has already been used' });
+        return;
+      }
+      if (invite.expires_at < new Date()) {
+        await safeRollback(client);
+        res.status(403).json({ error: 'Invite token has expired' });
+        return;
+      }
+
       const session = await createUserSession(client, config, parsed.data);
+      await client.query(
+        `UPDATE invite_tokens SET used_at = now(), used_by = $1 WHERE id = $2`,
+        [session.userId, invite.id]
+      );
       await client.query('COMMIT');
       res.status(201).json(session);
     } catch (error) {
@@ -202,7 +252,7 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
   });
 
   // Deprecated: legacy first-user bootstrap flow. Kept temporarily during v2 migration.
-  router.post('/bootstrap', async (req, res) => {
+  router.post('/bootstrap', authLimiter, async (req, res) => {
     if (req.header('x-bootstrap-token') !== config.BOOTSTRAP_TOKEN) {
       res.status(403).json({ error: 'Invalid bootstrap token' });
       return;
@@ -240,7 +290,7 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
     }
   });
 
-  router.post('/login', async (req, res) => {
+  router.post('/login', authLimiter, async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten() });
@@ -319,7 +369,7 @@ export function registerAuthRoutes({ pool, config }: AuthRouteDeps): Router {
     }
   });
 
-  router.post('/refresh', async (req, res) => {
+  router.post('/refresh', authLimiter, async (req, res) => {
     const parsed = refreshSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.flatten() });

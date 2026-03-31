@@ -1,8 +1,17 @@
+import crypto from 'node:crypto';
+
 import { Router } from 'express';
 import type { Request } from 'express';
+import ms from 'ms';
+import type { Pool } from 'pg';
 import { z } from 'zod';
 
+import type { AppConfig } from '../config.js';
+import { requireAccessToken } from '../authMiddleware.js';
+
 interface InviteRouteDeps {
+  pool: Pool;
+  config: AppConfig;
   publicBaseUrl?: string;
 }
 
@@ -14,6 +23,15 @@ const usernameSchema = z.preprocess(
 const inviteQuerySchema = z.object({
   username: usernameSchema,
 });
+
+const createInviteSchema = z.object({
+  note: z.string().max(120).optional(),
+  expiresIn: z.string().default('24h'),
+});
+
+function hashInviteToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
 
 function normalizeServerUrl(raw: string): string {
   const parsed = new URL(raw.trim());
@@ -44,7 +62,7 @@ function buildInviteUrl(serverUrl: string, username?: string): string {
   return invite.toString();
 }
 
-export function registerInviteRoutes({ publicBaseUrl }: InviteRouteDeps): Router {
+export function registerInviteRoutes({ pool, config, publicBaseUrl }: InviteRouteDeps): Router {
   const router = Router();
   const fixedBaseUrl = publicBaseUrl ? normalizeServerUrl(publicBaseUrl) : null;
 
@@ -86,6 +104,100 @@ export function registerInviteRoutes({ publicBaseUrl }: InviteRouteDeps): Router
     } catch (error) {
       console.error('[invite/open] failed', error);
       res.status(500).json({ error: 'Failed to generate invite redirect' });
+    }
+  });
+
+  // --- Authenticated invite token management ---
+
+  // POST /v1/invite/create  — generate a single-use token to send to someone
+  router.post('/create', requireAccessToken(config), async (req, res) => {
+    const parsed = createInviteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const ttlMs = ms(parsed.data.expiresIn);
+    if (typeof ttlMs !== 'number' || ttlMs <= 0) {
+      res.status(400).json({ error: 'Invalid expiresIn duration (e.g. "24h", "7d")' });
+      return;
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashInviteToken(rawToken);
+    const expiresAt = new Date(Date.now() + ttlMs);
+
+    try {
+      const row = await pool.query<{ id: string; note: string | null; expires_at: Date; created_at: Date }>(
+        `INSERT INTO invite_tokens (token_hash, created_by, note, expires_at)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, note, expires_at, created_at`,
+        [tokenHash, req.auth!.sub, parsed.data.note ?? null, expiresAt]
+      );
+      const invite = row.rows[0];
+      res.status(201).json({
+        id: invite.id,
+        token: rawToken,
+        note: invite.note,
+        expiresAt: invite.expires_at,
+        createdAt: invite.created_at,
+      });
+    } catch (error) {
+      console.error('[invite/create] failed', error);
+      res.status(500).json({ error: 'Failed to create invite token' });
+    }
+  });
+
+  // GET /v1/invite/list  — view all tokens you have created
+  router.get('/list', requireAccessToken(config), async (req, res) => {
+    try {
+      const rows = await pool.query<{
+        id: string;
+        note: string | null;
+        expires_at: Date;
+        used_at: Date | null;
+        created_at: Date;
+      }>(
+        `SELECT id, note, expires_at, used_at, created_at
+         FROM invite_tokens
+         WHERE created_by = $1
+         ORDER BY created_at DESC`,
+        [req.auth!.sub]
+      );
+      res.status(200).json({
+        invites: rows.rows.map((row) => ({
+          id: row.id,
+          note: row.note,
+          expiresAt: row.expires_at,
+          expired: row.expires_at < new Date(),
+          used: row.used_at !== null,
+          usedAt: row.used_at,
+          createdAt: row.created_at,
+        })),
+      });
+    } catch (error) {
+      console.error('[invite/list] failed', error);
+      res.status(500).json({ error: 'Failed to list invite tokens' });
+    }
+  });
+
+  // DELETE /v1/invite/:id  — revoke an unused token
+  router.delete('/:id', requireAccessToken(config), async (req, res) => {
+    try {
+      const result = await pool.query(
+        `DELETE FROM invite_tokens
+         WHERE id = $1 AND created_by = $2 AND used_at IS NULL
+         RETURNING id`,
+        [req.params.id, req.auth!.sub]
+      );
+      if ((result.rowCount ?? 0) === 0) {
+        res.status(404).json({ error: 'Invite not found or already used' });
+        return;
+      }
+      res.status(204).end();
+    } catch (error) {
+      console.error('[invite/delete] failed', error);
+      res.status(500).json({ error: 'Failed to revoke invite token' });
     }
   });
 

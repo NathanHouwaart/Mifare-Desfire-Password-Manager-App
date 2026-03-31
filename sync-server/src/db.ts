@@ -109,5 +109,19 @@ async function runMigrations(pool: Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    CREATE TABLE IF NOT EXISTS invite_tokens (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      token_hash TEXT NOT NULL UNIQUE,
+      created_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      note TEXT,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      used_by UUID REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_invite_tokens_created_by
+      ON invite_tokens (created_by);
   `);
 }

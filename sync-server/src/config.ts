@@ -15,6 +15,14 @@ const envSchema = z.object({
   MFA_ISSUER: z.string().min(1).default('SecurePass'),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1000).default(60_000),
   RATE_LIMIT_MAX: z.coerce.number().int().min(10).default(100),
+  // Stricter limits applied only to auth endpoints (login, register, refresh)
+  AUTH_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1000).default(900_000), // 15 min
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(20),
+  // If set, anyone with this token can register (share it with family).
+  // If not set and ALLOW_REGISTRATION=true, registration is fully open.
+  // Set ALLOW_REGISTRATION=false to block registration entirely regardless of this token.
+  ALLOW_REGISTRATION: z.coerce.boolean().default(true),
+  TRUST_PROXY: z.coerce.boolean().default(false),
 });
 
 export type RawConfig = z.infer<typeof envSchema>;
