@@ -40,7 +40,7 @@ services:
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
       AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
       AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-20}
-      TRUST_PROXY: ${TRUST_PROXY:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
     ports:
@@ -50,6 +50,18 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    command: http api:8787 --domain=${NGROK_DOMAIN} --log=stdout
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - "127.0.0.1:4040:4040"
 
 volumes:
   postgres_data:
