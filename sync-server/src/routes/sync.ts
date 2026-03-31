@@ -1,4 +1,6 @@
-import { Router } from 'express';
+import crypto from 'node:crypto';
+
+import { Router, type Response } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 
@@ -9,6 +11,22 @@ interface SyncRouteDeps {
   pool: Pool;
   config: AppConfig;
 }
+
+interface SyncStreamEventPayload {
+  cursor: number;
+  changed?: number;
+  sourceDeviceId?: string | null;
+  sentAt: string;
+}
+
+interface SyncStreamClient {
+  id: string;
+  res: Response;
+}
+
+const SYNC_EVENTS_RETRY_MS = 5_000;
+const SYNC_EVENTS_KEEPALIVE_MS = 15_000;
+const syncStreamClientsByUser = new Map<string, Map<string, SyncStreamClient>>();
 
 const pullQuerySchema = z.object({
   cursor: z.coerce.number().int().min(0).default(0),
@@ -54,10 +72,116 @@ async function appendChangeLog(
   );
 }
 
+function writeSseEvent(
+  res: Response,
+  eventName: string,
+  payload: SyncStreamEventPayload
+): void {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function addSyncStreamClient(userId: string, res: Response): string {
+  const clientId = crypto.randomUUID();
+  const userClients = syncStreamClientsByUser.get(userId) ?? new Map<string, SyncStreamClient>();
+  userClients.set(clientId, { id: clientId, res });
+  syncStreamClientsByUser.set(userId, userClients);
+  return clientId;
+}
+
+function removeSyncStreamClient(userId: string, clientId: string): void {
+  const userClients = syncStreamClientsByUser.get(userId);
+  if (!userClients) return;
+  userClients.delete(clientId);
+  if (userClients.size === 0) {
+    syncStreamClientsByUser.delete(userId);
+  }
+}
+
+function broadcastSyncEvent(
+  userId: string,
+  eventName: 'sync_change',
+  payload: SyncStreamEventPayload
+): void {
+  const userClients = syncStreamClientsByUser.get(userId);
+  if (!userClients || userClients.size === 0) return;
+
+  const staleClientIds: string[] = [];
+  for (const [clientId, client] of userClients) {
+    if (client.res.writableEnded || client.res.destroyed) {
+      staleClientIds.push(clientId);
+      continue;
+    }
+
+    try {
+      writeSseEvent(client.res, eventName, payload);
+    } catch {
+      staleClientIds.push(clientId);
+    }
+  }
+
+  for (const clientId of staleClientIds) {
+    removeSyncStreamClient(userId, clientId);
+  }
+}
+
 export function registerSyncRoutes({ pool, config }: SyncRouteDeps): Router {
   const router = Router();
 
   router.use(requireAccessToken(config));
+
+  router.get('/events', async (req, res) => {
+    const userId = req.auth?.sub;
+    if (!userId) {
+      res.status(401).json({ error: 'Missing auth context' });
+      return;
+    }
+
+    res.status(200);
+    res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+    res.setHeader('cache-control', 'no-cache, no-transform');
+    res.setHeader('connection', 'keep-alive');
+    res.setHeader('x-accel-buffering', 'no');
+    res.flushHeaders?.();
+    res.write(`retry: ${SYNC_EVENTS_RETRY_MS}\n`);
+    res.write(': connected\n\n');
+
+    let cursor = 0;
+    try {
+      const cursorResult = await pool.query<{ cursor: string }>(
+        `SELECT COALESCE(MAX(seq), 0)::text AS cursor
+         FROM sync_changes
+         WHERE user_id = $1`,
+        [userId]
+      );
+      cursor = Number(cursorResult.rows[0].cursor);
+    } catch (error) {
+      console.error('[sync/events] failed to load initial cursor', error);
+    }
+
+    writeSseEvent(res, 'hello', {
+      cursor,
+      sentAt: new Date().toISOString(),
+    });
+
+    const clientId = addSyncStreamClient(userId, res);
+    const keepalive = setInterval(() => {
+      if (res.writableEnded || res.destroyed) return;
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        // Ignore write failures here; cleanup runs on close/abort.
+      }
+    }, SYNC_EVENTS_KEEPALIVE_MS);
+
+    const cleanup = () => {
+      clearInterval(keepalive);
+      removeSyncStreamClient(userId, clientId);
+    };
+
+    req.on('close', cleanup);
+    req.on('aborted', cleanup);
+  });
 
   router.post('/push', async (req, res) => {
     const parsed = pushBodySchema.safeParse(req.body);
@@ -152,11 +276,21 @@ export function registerSyncRoutes({ pool, config }: SyncRouteDeps): Router {
         `SELECT COALESCE(MAX(seq), 0)::bigint AS cursor FROM sync_changes WHERE user_id = $1`,
         [userId]
       );
+      const cursor = Number(cursorResult.rows[0].cursor);
+
+      if (applied.length > 0) {
+        broadcastSyncEvent(userId, 'sync_change', {
+          cursor,
+          changed: applied.length,
+          sourceDeviceId: req.auth?.did ?? null,
+          sentAt: new Date().toISOString(),
+        });
+      }
 
       res.status(200).json({
         applied,
         skipped,
-        cursor: Number(cursorResult.rows[0].cursor),
+        cursor,
       });
     } catch (error) {
       await client.query('ROLLBACK');

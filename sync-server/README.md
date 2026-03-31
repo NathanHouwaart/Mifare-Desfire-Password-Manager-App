@@ -25,6 +25,7 @@ Lightweight sync API for SecurePass encrypted vault rows.
 - `POST /v1/sync/push`
 - `GET /v1/sync/pull`
 - `GET /v1/sync/cursor`
+- `GET /v1/sync/events` (SSE stream for remote-change notifications)
 
 ## Run locally
 1. Install dependencies:
