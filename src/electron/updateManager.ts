@@ -362,7 +362,12 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     preferences = {
       autoDownloadEnabled: Boolean(next.autoDownloadEnabled),
     };
-    writeUpdatePreferences(preferences);
+    try {
+      writeUpdatePreferences(preferences);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log('error', `[updates] Failed to persist update preferences: ${message}`);
+    }
     return getPreferences();
   };
 
