@@ -1,4 +1,4 @@
-import { app, ipcMain } from 'electron';
+import { app } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +22,9 @@ export interface UpdateManagerController {
   start: () => void;
   stop: () => void;
   publishCurrentStatus: () => void;
+  getStatus: () => AppUpdateStatusDto;
+  checkNow: () => Promise<AppUpdateStatusDto>;
+  installNow: () => Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 function parseErrorMessage(error: unknown): string {
@@ -285,15 +288,7 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     });
   });
 
-  ipcMain.handle('update:getStatus', async () => {
-    return status;
-  });
-
-  ipcMain.handle('update:checkNow', async () => {
-    return checkForUpdates('manual');
-  });
-
-  ipcMain.handle('update:installNow', async () => {
+  const installNow = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
     if (!canUseUpdater()) {
       return {
         ok: false as const,
@@ -313,7 +308,7 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     }, 100);
 
     return { ok: true as const };
-  });
+  };
 
   const start = (): void => {
     if (started) return;
@@ -347,5 +342,8 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     start,
     stop,
     publishCurrentStatus: emitStatus,
+    getStatus: () => ({ ...status }),
+    checkNow: () => checkForUpdates('manual'),
+    installNow,
   };
 }

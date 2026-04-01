@@ -67,6 +67,12 @@ let hotplugCheckInFlight = false;
 let pendingReconnectPort: string | null = null;
 let updateManager: UpdateManagerController | null = null;
 
+type UpdateIpcFacade = {
+  getStatus: () => AppUpdateStatusDto;
+  checkNow: () => Promise<AppUpdateStatusDto>;
+  installNow: () => Promise<{ ok: true } | { ok: false; error: string }>;
+};
+
 if (process.platform === 'win32') {
   // Keep taskbar grouping/icon tied to our explicit app identity.
   app.setAppUserModelId('com.securepass.app');
@@ -769,6 +775,50 @@ async function closeBridgeServer(
   });
 }
 
+function parseUnknownErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message.trim();
+  }
+  const asText = String(error ?? '');
+  return asText.trim().length > 0 ? asText.trim() : 'Unknown updater error';
+}
+
+function createUnavailableUpdateFacade(reason: string): UpdateIpcFacade {
+  const message = reason.trim().length > 0 ? reason : 'Updater is unavailable in this build.';
+  return {
+    getStatus: () => ({
+      state: 'error',
+      currentVersion: app.getVersion(),
+      error: message,
+      lastCheckedAt: Date.now(),
+    }),
+    checkNow: async () => ({
+      state: 'error',
+      currentVersion: app.getVersion(),
+      error: message,
+      lastCheckedAt: Date.now(),
+    }),
+    installNow: async () => ({
+      ok: false as const,
+      error: message,
+    }),
+  };
+}
+
+let updateIpcFacade: UpdateIpcFacade = createUnavailableUpdateFacade('Updater is initializing...');
+
+function registerDeterministicUpdateIpcHandlers(): void {
+  ipcMain.removeHandler('update:getStatus');
+  ipcMain.removeHandler('update:checkNow');
+  ipcMain.removeHandler('update:installNow');
+
+  ipcMain.handle('update:getStatus', async () => updateIpcFacade.getStatus());
+  ipcMain.handle('update:checkNow', async () => updateIpcFacade.checkNow());
+  ipcMain.handle('update:installNow', async () => updateIpcFacade.installNow());
+}
+
+registerDeterministicUpdateIpcHandlers();
+
 ipcMain.handle('sync:consumeInvite', (): SyncInvitePayloadDto | null => {
   const next = pendingSyncInvite;
   pendingSyncInvite = null;
@@ -1040,13 +1090,25 @@ app.on('ready', async () => {
     mainWindow.loadFile(getUIPath());
   }
 
-  updateManager = registerUpdateManager({
-    log: nfcLog,
-    publishStatus: (status) => {
-      mainWindow?.webContents.send('update:statusChanged', status);
-    },
-  });
-  updateManager.start();
+  try {
+    const manager = registerUpdateManager({
+      log: nfcLog,
+      publishStatus: (status) => {
+        mainWindow?.webContents.send('update:statusChanged', status);
+      },
+    });
+    updateManager = manager;
+    updateIpcFacade = {
+      getStatus: () => manager.getStatus(),
+      checkNow: () => manager.checkNow(),
+      installNow: () => manager.installNow(),
+    };
+    manager.start();
+  } catch (error) {
+    const message = parseUnknownErrorMessage(error);
+    nfcLog('error', `[updates] failed to initialize updater: ${message}`);
+    updateIpcFacade = createUnavailableUpdateFacade(`Updater unavailable: ${message}`);
+  }
 });
 
 ipcMain.handle('greet', async (_event: IpcMainInvokeEvent, name: string) => {

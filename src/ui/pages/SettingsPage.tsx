@@ -16,6 +16,14 @@ function formatRetryDelay(ms: number): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
+function formatUpdateIpcError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("No handler registered for 'update:")) {
+    return 'Updater backend is unavailable in this installed build. Install the latest release and try again.';
+  }
+  return message;
+}
+
 interface SettingsPageProps {
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
@@ -502,7 +510,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         });
       }
     } catch (e) {
-      setUpdateFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+      setUpdateFeedback({ type: 'err', message: formatUpdateIpcError(e) });
     } finally {
       setUpdateCheckBusy(false);
       window.setTimeout(() => setUpdateFeedback(null), 6000);
@@ -520,7 +528,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         setUpdateFeedback({ type: 'err', message: result.error });
       }
     } catch (e) {
-      setUpdateFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+      setUpdateFeedback({ type: 'err', message: formatUpdateIpcError(e) });
     } finally {
       setUpdateInstallBusy(false);
       window.setTimeout(() => setUpdateFeedback(null), 6000);
