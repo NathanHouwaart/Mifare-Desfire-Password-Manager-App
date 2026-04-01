@@ -3,8 +3,9 @@ import { Cpu, Terminal } from 'lucide-react';
 import { ConnectionCard }     from '../Components/Nfc/ConnectionCard';
 import { FirmwareVersionCard } from '../Components/Nfc/FirmwareVersionCard';
 import { CardVersionCard }    from '../Components/Nfc/CardVersionCard';
-import { SelfTestCard, INITIAL_TESTS } from '../Components/Nfc/SelfTestCard';
-import type { TestResult }     from '../Components/Nfc/SelfTestCard';
+import { SelfTestCard } from '../Components/Nfc/SelfTestCard';
+import { INITIAL_TESTS } from '../Components/Nfc/selfTestTypes';
+import type { TestResult } from '../Components/Nfc/selfTestTypes';
 
 // Stable canonical ID map â€” avoids fragile string transforms on C++ names
 const TEST_ID_BY_NAME: Record<string, string> = {
@@ -29,11 +30,13 @@ interface NfcReaderPageProps {
   isConnected: boolean;
   onConnectionChange: (connected: boolean) => void;
   terminalEnabled: boolean;
+  highlightConnect?: boolean;
 }
 
 export const NfcReaderPage = ({
   isTerminalOpen, onToggleTerminal,
   isConnected, onConnectionChange, terminalEnabled,
+  highlightConnect = false,
 }: NfcReaderPageProps) => {
 
   /* â”€â”€ Connection state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -112,7 +115,7 @@ export const NfcReaderPage = ({
       if (autoConnectDoneRef.current) return;
       autoConnectDoneRef.current = true;
       if (isConnected) return;                          // already up — don't reconnect
-      if ((localStorage.getItem('setting-autoconnect') ?? 'false') !== 'true') return;
+      if ((localStorage.getItem('setting-autoconnect') ?? 'true') !== 'true') return;
       const lastPort = localStorage.getItem('setting-last-port');
       if (!lastPort) return;
       setStatusMsg('Auto-connecting to ' + lastPort + '…');
@@ -121,6 +124,21 @@ export const NfcReaderPage = ({
     run();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const api = (window as Window & { electron?: Window['electron'] }).electron;
+    if (!api || typeof api.onNfcConnectionChange !== 'function') return;
+
+    return api.onNfcConnectionChange((state) => {
+      onConnectionChange(Boolean(state.connected));
+      if (state.message) {
+        setStatusMsg(state.message);
+      }
+      if (!state.connected) {
+        void fetchPorts();
+      }
+    });
+  }, [fetchPorts, onConnectionChange]);
 
   /** Core connection attempt with per-attempt timeout and configurable retries. */
   const connectWithRetry = useCallback(async (targetPort: string) => {
@@ -282,6 +300,7 @@ export const NfcReaderPage = ({
             statusMsg={statusMsg}
             onConnect={handleConnect}
             onDisconnect={handleDisconnect}
+            highlightConnect={highlightConnect}
           />
         </div>
 

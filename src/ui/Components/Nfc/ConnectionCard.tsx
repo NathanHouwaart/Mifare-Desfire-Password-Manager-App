@@ -10,11 +10,13 @@ interface ConnectionCardProps {
   statusMsg:      string;
   onConnect:      () => void;
   onDisconnect:   () => void;
+  highlightConnect?: boolean;
 }
 
 export const ConnectionCard = ({
   isConnected, port, onPortChange, availablePorts,
   portsLoading, onFetchPorts, statusMsg, onConnect, onDisconnect,
+  highlightConnect = false,
 }: ConnectionCardProps) => (
   <div className="bg-card border border-edge rounded-2xl p-5">
 
@@ -75,10 +77,12 @@ export const ConnectionCard = ({
       <button
         onClick={onConnect}
         disabled={isConnected || !port}
-        className="flex-1 py-3 rounded-xl text-[16px] font-medium text-white
+        data-guide-item="nfc-connect"
+        className={`flex-1 py-3 rounded-xl text-[16px] font-medium text-white
                    bg-accent-solid hover:bg-accent-hover active:scale-[0.98]
                    disabled:bg-input disabled:text-dim disabled:border disabled:border-edge
-                   disabled:cursor-not-allowed transition-all duration-150"
+                   disabled:cursor-not-allowed transition-all duration-150
+                   ${highlightConnect ? 'guide-click-target' : ''}`}
       >
         Connect
       </button>

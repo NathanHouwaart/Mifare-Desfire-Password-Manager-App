@@ -161,7 +161,7 @@ function findNodeOnUnix(): string {
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 function writeWindowsLauncher(registrationDir: string, hostDir: string, nodeExe: string): string {

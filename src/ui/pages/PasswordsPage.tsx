@@ -166,7 +166,6 @@ const EntryModal = ({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={e => { if (e.target === e.currentTarget && !saving) onClose(); }}
     >
       <div className="bg-card border border-edge rounded-2xl w-full max-w-md shadow-2xl
                       animate-[fadeSlideUp_0.2s_ease-out]">
@@ -278,7 +277,6 @@ const DeleteDialog = ({
 }) => (
   <div
     className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-    onClick={e => { if (e.target === e.currentTarget) onClose(); }}
   >
     <div className="bg-card border border-edge rounded-2xl w-full max-w-sm shadow-2xl p-6
                     flex flex-col gap-4 animate-[fadeSlideUp_0.2s_ease-out]">
@@ -330,12 +328,14 @@ interface PasswordCardProps {
   onEdit:            () => void;
   onDelete:          () => void;
   theme:             'dark' | 'light';
+  highlightRevealAction?: boolean;
 }
 
 const PasswordCard = ({
   entry, decrypted, isRevealed, copiedId, copiedUsernameId, revealCopiedField,
   revealProgress, revealSecsLeft,
   onRevealToggle, onCopyClick, onCopyUsernameClick, onCopyUsername, onCopyPassword, onEdit, onDelete, theme,
+  highlightRevealAction = false,
 }: PasswordCardProps) => (
   <div className="border-b border-edge last:border-b-0 hover:bg-input transition-colors duration-100">
 
@@ -391,12 +391,14 @@ const PasswordCard = ({
           aria-label={isRevealed ? 'Hide password' : 'Show password'}
           aria-pressed={isRevealed}
           title={isRevealed ? 'Hide password' : 'Show password'}
+          data-guide-item="password-reveal"
           className={`w-9 h-9 rounded-lg flex items-center justify-center transition-all duration-100
                       active:scale-90 focus-visible:outline-none focus-visible:ring-2
                       focus-visible:ring-accent-edge
                       ${isRevealed
                         ? 'text-accent bg-accent-soft'
-                        : 'text-mid hover:text-hi hover:bg-well'}`}
+                        : 'text-mid hover:text-hi hover:bg-well'}
+                      ${highlightRevealAction ? 'guide-click-target' : ''}`}
         >
           {isRevealed ? <EyeOff className="w-[17px] h-[17px]" /> : <Eye className="w-[17px] h-[17px]" />}
         </button>
@@ -529,7 +531,17 @@ const PasswordCard = ({
 
 // ── Main Page ────────────────────────────────────────────────────────────────
 
-export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) => {
+export const PasswordsPage = ({
+  theme = 'dark',
+  isActive = false,
+  guideHighlightNewCredential = false,
+  guideHighlightReveal = false,
+}: {
+  theme?: 'dark' | 'light';
+  isActive?: boolean;
+  guideHighlightNewCredential?: boolean;
+  guideHighlightReveal?: boolean;
+}) => {
   const [entries,        setEntries]        = useState<EntryListItemDto[]>([]);
   const [loading,        setLoading]        = useState(true);
   const [loadError,      setLoadError]      = useState<string | null>(null);
@@ -553,6 +565,9 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     'new' | { entry: EntryListItemDto; decrypted: EntryPayloadDto } | null
   >(null);
   const [deleteTarget, setDeleteTarget] = useState<EntryListItemDto | null>(null);
+  const [showNfcHint, setShowNfcHint] = useState(
+    () => localStorage.getItem('hint-passwords-nfc') !== 'dismissed'
+  );
 
   const cancelRef = useRef(false);
 
@@ -639,6 +654,44 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     setEntries(list);
   }, []);
 
+  const tryAutoSyncAfterVaultChange = useCallback(async () => {
+    try {
+      const syncMode = localStorage.getItem('setting-sync-mode') ?? 'local';
+      if (syncMode !== 'synced') return;
+
+      const status = await window.electron['sync:getStatus']();
+      if (!status.configured || !status.loggedIn) return;
+
+      await window.electron['sync:syncNow']();
+      window.dispatchEvent(new Event('securepass:vault-sync-applied'));
+    } catch (error) {
+      console.warn('[sync] auto-sync after vault change failed:', error);
+    }
+  }, []);
+
+  // Refresh when this tab becomes active so sync changes from Settings appear.
+  useEffect(() => {
+    if (!isActive) return;
+    void refreshEntries().catch(() => {});
+  }, [isActive, refreshEntries]);
+
+  // Refresh on explicit sync-applied signal from Settings.
+  useEffect(() => {
+    const onSynced = () => { void refreshEntries().catch(() => {}); };
+    window.addEventListener('securepass:vault-sync-applied', onSynced);
+    return () => window.removeEventListener('securepass:vault-sync-applied', onSynced);
+  }, [refreshEntries]);
+
+  // Allow guided onboarding to open the add-credential form without duplicating UI logic.
+  useEffect(() => {
+    const onGuideOpenNewCredential = () => {
+      setTapError(null);
+      setEditTarget('new');
+    };
+    window.addEventListener('securepass:guide-open-new-credential', onGuideOpenNewCredential);
+    return () => window.removeEventListener('securepass:guide-open-new-credential', onGuideOpenNewCredential);
+  }, []);
+
   // ── Reveal toggle ────────────────────────────────────────────────────────
   // Always require a card tap to reveal — even if this entry was previously
   // shown. Hiding clears the decrypted payload so it cannot be re-shown
@@ -654,6 +707,7 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
         const payload = await window.electron['vault:getEntry'](entry.id);
         setRevealedPayload(payload);
         setRevealedId(entry.id);
+        window.dispatchEvent(new Event('securepass:guide-credential-revealed'));
       });
     } catch { /* tapError already set */ }
   }, [revealedId, withTap]);
@@ -774,6 +828,7 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
         await window.electron['vault:createEntry'](data);
         await refreshEntries();
       });
+      window.dispatchEvent(new Event('securepass:guide-credential-created'));
     } else if (editTarget) {
       const entryId = editTarget.entry.id;
       const data: EntryUpdateDto = {
@@ -785,8 +840,9 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
         await refreshEntries();
       });
     }
+    void tryAutoSyncAfterVaultChange();
     setEditTarget(null);
-  }, [editTarget, withTap, refreshEntries]);
+  }, [editTarget, withTap, refreshEntries, tryAutoSyncAfterVaultChange]);
 
   // ── Delete (no card needed) ──────────────────────────────────────────────
   const handleDelete = useCallback(async () => {
@@ -794,13 +850,19 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
     const id = deleteTarget.id;
     setDeleteTarget(null);
     try {
-      await window.electron['vault:deleteEntry'](id);
-      setEntries(prev => prev.filter(e => e.id !== id));
+      const deleted = await window.electron['vault:deleteEntry'](id);
+      if (!deleted) {
+        setTapError('Entry was not found in the vault database.');
+        return;
+      }
+
+      await refreshEntries();
       if (revealedId === id) { setRevealedId(null); setRevealedPayload(null); }
       if (copiedRevealField?.id === id) setCopiedRevealField(null);
       if (copiedUsernameId === id) setCopiedUsernameId(null);
+      void tryAutoSyncAfterVaultChange();
     } catch (err) { setTapError(errMsg(err)); }
-  }, [deleteTarget, revealedId, copiedRevealField, copiedUsernameId]);
+  }, [deleteTarget, revealedId, copiedRevealField, copiedUsernameId, refreshEntries, tryAutoSyncAfterVaultChange]);
 
   // ── Derived ──────────────────────────────────────────────────────────────
   const categories = useMemo(() => {
@@ -919,6 +981,26 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
               </button>
             </div>
           )}
+
+          {/* One-time NFC hint for first-time users */}
+          {showNfcHint && entries.length > 0 && (
+            <div className="flex items-start gap-2 mt-3 rounded-xl border border-accent-edge bg-accent-soft p-3">
+              <Shield className="w-4 h-4 text-accent shrink-0 mt-0.5" />
+              <p className="text-[13px] text-mid flex-1">
+                Tip: Use your NFC card to reveal or copy credentials when needed.
+              </p>
+              <button
+                onClick={() => {
+                  setShowNfcHint(false);
+                  localStorage.setItem('hint-passwords-nfc', 'dismissed');
+                }}
+                className="text-accent hover:text-hi shrink-0"
+                aria-label="Dismiss NFC hint"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Table */}
@@ -974,6 +1056,7 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
                   onEdit={() => handleEdit(entry)}
                   onDelete={() => setDeleteTarget(entry)}
                   theme={theme}
+                  highlightRevealAction={guideHighlightReveal}
                 />
               ))}
             </div>
@@ -987,9 +1070,11 @@ export const PasswordsPage = ({ theme = 'dark' }: { theme?: 'dark' | 'light' }) 
           </p>
           <button
             onClick={() => setEditTarget('new')}
-            className="flex items-center gap-2 px-5 py-2.5 bg-accent-solid hover:bg-accent-hover
+            data-guide-item="password-new"
+            className={`flex items-center gap-2 px-5 py-2.5 bg-accent-solid hover:bg-accent-hover
                        active:scale-95 rounded-2xl text-[15px] font-medium text-white
-                       shadow-lg shadow-accent-soft transition-all duration-150"
+                       shadow-lg shadow-accent-soft transition-all duration-150
+                       ${guideHighlightNewCredential ? 'guide-click-target' : ''}`}
           >
             <Plus className="w-4 h-4" />
             New Credential

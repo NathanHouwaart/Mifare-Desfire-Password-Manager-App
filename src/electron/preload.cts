@@ -5,9 +5,13 @@ electron.contextBridge.exposeInMainWorld("electron", {
     add: (a: number, b: number) => ipcInvoke("add", a, b),
     connect: (port: string) => ipcInvoke("connect", port),
     disconnect: () => ipcInvoke("disconnect"),
+    'nfc:getConnectionState': () => ipcInvoke('nfc:getConnectionState'),
     listComPorts: () => ipcInvoke("listComPorts"),
     onNfcLog: (callback: (entry: NfcLogEntry) => void) => ipcOn('nfc-log', callback),
     onSelfTestProgress: (callback: (result: SelfTestResultDto) => void) => ipcOn('nfc:selfTestProgress', callback),
+    onNfcConnectionChange: (callback: (state: NfcConnectionStateDto) => void) => ipcOn('nfc:connectionChanged', callback),
+    onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => ipcOn('securepass:syncInvite', callback),
+    onSyncApplied: (callback: (payload: SyncAppliedEventDto) => void) => ipcOn('sync:applied', callback),
     saveFile: (filename: string, content: string) => ipcInvoke("saveFile", filename, content),
     getFirmwareVersion: () => ipcInvoke("getFirmwareVersion"),
     runSelfTests: () => ipcInvoke("runSelfTests"),
@@ -33,6 +37,18 @@ electron.contextBridge.exposeInMainWorld("electron", {
 
     // Cancel any in-progress card-wait operation
     'nfc:cancel': () => ipcInvoke('nfc:cancel'),
+    'app:lock': () => ipcInvoke('app:lock'),
+    'app:relaunch': () => ipcInvoke('app:relaunch'),
+
+    // App-lock PIN operations (main-process managed)
+    'pin:has':    () => ipcInvoke('pin:has'),
+    'pin:set':    (pin: string) => ipcInvoke('pin:set', pin),
+    'pin:verify': (pin: string) => ipcInvoke('pin:verify', pin),
+    'pin:change': (currentPin: string, newPin: string) => ipcInvoke('pin:change', currentPin, newPin),
+    'pin:recovery:capabilities': () => ipcInvoke('pin:recovery:capabilities'),
+    'pin:recovery:start': (payload: PinRecoveryStartDto) => ipcInvoke('pin:recovery:start', payload),
+    'pin:recovery:destructiveReset': () => ipcInvoke('pin:recovery:destructiveReset'),
+    'pin:recovery:complete': (payload: PinRecoveryCompleteDto) => ipcInvoke('pin:recovery:complete', payload),
 
     // Clear the system clipboard via the main process (no focus restriction)
     'clipboard:clear': () => ipcInvoke('clipboard:clear'),
@@ -42,6 +58,39 @@ electron.contextBridge.exposeInMainWorld("electron", {
     // Browser extension helpers
     'extension:open-folder':          () => ipcInvoke('extension:open-folder'),
     'extension:reload-registration':  () => ipcInvoke('extension:reload-registration'),
+
+    // Sync helpers
+    'sync:getStatus':   () => ipcInvoke('sync:getStatus'),
+    'sync:validateServer': (payload: SyncValidateServerDto) => ipcInvoke('sync:validateServer', payload),
+    'sync:consumeInvite': () => ipcInvoke('sync:consumeInvite'),
+    'sync:setConfig':   (config: SyncConfigDto) => ipcInvoke('sync:setConfig', config),
+    'sync:checkUsername': () => ipcInvoke('sync:checkUsername'),
+    'sync:getAuthMe':   () => ipcInvoke('sync:getAuthMe'),
+    'sync:createInvite': (payload: SyncCreateInviteDto) => ipcInvoke('sync:createInvite', payload),
+    'sync:listInvites': () => ipcInvoke('sync:listInvites'),
+    'sync:revokeInvite': (payload: { id: string }) => ipcInvoke('sync:revokeInvite', payload),
+    'sync:clearConfig': () => ipcInvoke('sync:clearConfig'),
+    'sync:bootstrap':   (payload: SyncBootstrapDto) => ipcInvoke('sync:bootstrap', payload),
+    'sync:register':    (payload: SyncRegisterDto) => ipcInvoke('sync:register', payload),
+    'sync:login':       (payload: SyncLoginDto) => ipcInvoke('sync:login', payload),
+    'sync:mfaStatus':   () => ipcInvoke('sync:mfaStatus'),
+    'sync:mfaSetup':    () => ipcInvoke('sync:mfaSetup'),
+    'sync:mfaEnable':   (payload: SyncMfaCodeDto) => ipcInvoke('sync:mfaEnable', payload),
+    'sync:mfaDisable':  (payload: SyncMfaCodeDto) => ipcInvoke('sync:mfaDisable', payload),
+    'sync:logout':      () => ipcInvoke('sync:logout'),
+    'sync:switchUser':  () => ipcInvoke('sync:switchUser'),
+    'sync:getDevices':  () => ipcInvoke('sync:getDevices'),
+    'sync:updateCurrentDeviceName': (payload: SyncUpdateDeviceDto) => ipcInvoke('sync:updateCurrentDeviceName', payload),
+    'sync:push':        () => ipcInvoke('sync:push'),
+    'sync:pull':        () => ipcInvoke('sync:pull'),
+    'sync:syncNow':     () => ipcInvoke('sync:syncNow'),
+    'sync:getVaultKeyEnvelope': () => ipcInvoke('sync:getVaultKeyEnvelope'),
+    'sync:getVaultKeyStatus':   () => ipcInvoke('sync:getVaultKeyStatus'),
+    'sync:prepareVaultKey':     (payload: SyncVaultKeyPasswordDto) => ipcInvoke('sync:prepareVaultKey', payload),
+    // Deprecated compatibility channels
+    'sync:initVaultKey':        (payload: SyncVaultKeyPassphraseDto) => ipcInvoke('sync:initVaultKey', payload),
+    'sync:unlockVaultKey':      (payload: SyncVaultKeyPassphraseDto) => ipcInvoke('sync:unlockVaultKey', payload),
+    'sync:lockVaultKey':        () => ipcInvoke('sync:lockVaultKey'),
 } satisfies Window["electron"]);
 
 

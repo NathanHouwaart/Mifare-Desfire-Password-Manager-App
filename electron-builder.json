@@ -12,6 +12,12 @@
     { "from": "native-host",         "to": "native-host"         },
     { "from": "extension",           "to": "extension"           }
   ],
+  "protocols": [
+    {
+      "name": "SecurePass Invite Links",
+      "schemes": ["securepass"]
+    }
+  ],
   "mac": {
     "target": "dmg"
   },

@@ -1,7 +1,20 @@
-import { useState, type ReactNode, type ComponentType } from 'react';
-import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe } from 'lucide-react';
+import { useEffect, useState, type ReactNode, type ComponentType } from 'react';
+import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe, Cloud } from 'lucide-react';
 
-const PIN_HASH_KEY = 'app-pin-hash';
+const PIN_LENGTH = 6;
+const PIN_REGEX = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
+
+function sanitizePinInput(value: string): string {
+  return value.replace(/\D/g, '').slice(0, PIN_LENGTH);
+}
+
+function formatRetryDelay(ms: number): string {
+  const totalSeconds = Math.max(1, Math.ceil(ms / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
 
 interface SettingsPageProps {
   theme: 'dark' | 'light';
@@ -144,12 +157,28 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
 
   const [exportBusy, setExportBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
+  const [pinFeedback, setPinFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+  const [pinChangeOpen, setPinChangeOpen] = useState(false);
+  const [pinChangeBusy, setPinChangeBusy] = useState(false);
+  const [pinChangeError, setPinChangeError] = useState<string | null>(null);
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
   const [exportFeedback, setExportFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
   const [importFeedback, setImportFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
   const [extRegBusy,  setExtRegBusy]  = useState(false);
   const [extRegFeedback, setExtRegFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
   const [extFolderBusy, setExtFolderBusy] = useState(false);
   const [extFolderFeedback, setExtFolderFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+
+  const [syncStatus, setSyncStatus] = useState<SyncStatusDto | null>(null);
+  const [syncMode, setSyncMode] = useState<'local' | 'synced'>(
+    () => (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local'
+  );
+  const [syncFeedback, setSyncFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+  const [syncNowBusy, setSyncNowBusy] = useState(false);
+  const [vaultKeyStatus, setVaultKeyStatus] = useState<SyncVaultKeyStatusDto | null>(null);
+  const [mfaStatus, setMfaStatus] = useState<SyncMfaStatusDto | null>(null);
 
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
@@ -158,9 +187,94 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     set(val); localStorage.setItem(key, val);
   };
 
-  const handleChangePIN = () => {
-    localStorage.removeItem(PIN_HASH_KEY);
-    alert('PIN cleared. You will be asked to set a new PIN when you next lock the vault.');
+  const clearPinFeedbackSoon = () => {
+    window.setTimeout(() => setPinFeedback(null), 5000);
+  };
+
+  const resetPinChangeForm = () => {
+    setCurrentPin('');
+    setNewPin('');
+    setConfirmPin('');
+    setPinChangeError(null);
+  };
+
+  const closePinChangeModal = () => {
+    if (pinChangeBusy) return;
+    setPinChangeOpen(false);
+    resetPinChangeForm();
+  };
+
+  const handleChangePIN = async () => {
+    try {
+      const hasPin = await window.electron['pin:has']();
+      if (!hasPin) {
+        setPinFeedback({ type: 'err', message: 'No unlock PIN is configured yet. Lock the vault once to create one.' });
+        clearPinFeedbackSoon();
+        return;
+      }
+      setPinFeedback(null);
+      setPinChangeOpen(true);
+    } catch (e) {
+      setPinFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+      clearPinFeedbackSoon();
+    }
+  };
+
+  const handleSubmitPinChange = async () => {
+    if (pinChangeBusy) return;
+
+    if (!PIN_REGEX.test(currentPin)) {
+      setPinChangeError(`Current PIN must be exactly ${PIN_LENGTH} digits.`);
+      return;
+    }
+    if (!PIN_REGEX.test(newPin)) {
+      setPinChangeError(`New PIN must be exactly ${PIN_LENGTH} digits.`);
+      return;
+    }
+    if (newPin !== confirmPin) {
+      setPinChangeError('New PIN and confirmation do not match.');
+      return;
+    }
+    if (newPin === currentPin) {
+      setPinChangeError('New PIN must be different from your current PIN.');
+      return;
+    }
+
+    setPinChangeBusy(true);
+    setPinChangeError(null);
+    try {
+      const result = await window.electron['pin:change'](currentPin, newPin);
+      if (result.ok) {
+        setPinChangeOpen(false);
+        resetPinChangeForm();
+        setPinFeedback({ type: 'ok', message: 'Unlock PIN changed successfully.' });
+        clearPinFeedbackSoon();
+        return;
+      }
+
+      if (result.reason === 'LOCKED') {
+        setCurrentPin('');
+        setPinChangeError(`Too many attempts. Try again in ${formatRetryDelay(result.retryAfterMs)}.`);
+        return;
+      }
+
+      if (result.reason === 'INVALID_CURRENT') {
+        setCurrentPin('');
+        setPinChangeError(
+          `Current PIN is incorrect. ${result.attemptsRemaining} attempt${result.attemptsRemaining === 1 ? '' : 's'} remaining.`
+        );
+        return;
+      }
+
+      setPinChangeOpen(false);
+      resetPinChangeForm();
+      setPinFeedback({ type: 'err', message: 'No unlock PIN is configured yet. Lock the vault once to create one.' });
+      clearPinFeedbackSoon();
+    } catch (e) {
+      setPinChangeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPinChangeBusy(false);
+    }
   };
 
   const handleExport = async () => {
@@ -236,6 +350,115 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   };
 
   // ── Settings search ─────────────────────────────────────────────
+  const syncFeedbackFor = (type: 'ok' | 'err', message: string, timeoutMs = 6000) => {
+    setSyncFeedback({ type, message });
+    window.setTimeout(() => setSyncFeedback(null), timeoutMs);
+  };
+
+  const refreshSyncStatus = async (): Promise<SyncStatusDto | null> => {
+    try {
+      const status = await window.electron['sync:getStatus']();
+      setSyncStatus(status);
+      return status;
+    } catch (e) {
+      setSyncStatus(null);
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+      return null;
+    }
+  };
+
+  const refreshVaultKeyStatus = async () => {
+    try {
+      const status = await window.electron['sync:getVaultKeyStatus']();
+      setVaultKeyStatus(status);
+    } catch {
+      setVaultKeyStatus(null);
+    }
+  };
+
+  const refreshMfaStatus = async (statusOverride?: SyncStatusDto | null) => {
+    const status = statusOverride ?? syncStatus;
+    if (!status?.loggedIn) {
+      setMfaStatus(null);
+      return;
+    }
+
+    try {
+      const nextStatus = await window.electron['sync:mfaStatus']();
+      setMfaStatus(nextStatus);
+    } catch {
+      setMfaStatus(null);
+    }
+  };
+
+  useEffect(() => {
+    const init = async () => {
+      const status = await refreshSyncStatus();
+      await refreshVaultKeyStatus();
+      await refreshMfaStatus(status);
+    };
+    void init();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onSyncModeChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ mode?: 'local' | 'synced' }>).detail;
+      const mode = detail?.mode;
+      if (mode !== 'local' && mode !== 'synced') return;
+      setSyncMode(mode);
+      if (mode === 'local') {
+        setSyncStatus(null);
+        setVaultKeyStatus(null);
+        setMfaStatus(null);
+      } else {
+        void (async () => {
+          const status = await refreshSyncStatus();
+          await refreshVaultKeyStatus();
+          await refreshMfaStatus(status);
+        })();
+      }
+    };
+    const onSyncDataChanged = () => {
+      void (async () => {
+        const status = await refreshSyncStatus();
+        await refreshVaultKeyStatus();
+        await refreshMfaStatus(status);
+      })();
+    };
+    window.addEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+    window.addEventListener('securepass:vault-sync-applied', onSyncDataChanged);
+    return () => {
+      window.removeEventListener('securepass:sync-mode-changed', onSyncModeChanged);
+      window.removeEventListener('securepass:vault-sync-applied', onSyncDataChanged);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSyncNow = async () => {
+    setSyncNowBusy(true);
+    setSyncFeedback(null);
+    try {
+      const result = await window.electron['sync:syncNow']();
+      await refreshSyncStatus();
+      syncFeedbackFor(
+        'ok',
+        `Sync complete. Push ${result.push.sent}/${result.push.applied}, pull ${result.pull.received}/${result.pull.applied}, deleted ${result.pull.deleted}.`
+      );
+      window.dispatchEvent(new Event('securepass:vault-sync-applied'));
+      await refreshVaultKeyStatus();
+      await refreshMfaStatus();
+    } catch (e) {
+      syncFeedbackFor('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSyncNowBusy(false);
+    }
+  };
+
+  const handleOpenSyncWizard = () => {
+    window.dispatchEvent(new CustomEvent('securepass:open-sync-wizard', {
+      detail: syncMode === 'synced' ? { mode: 'synced' as const } : {},
+    }));
+  };
+
   const [settingsSearch, setSettingsSearch] = useState('');
   const q = settingsSearch.trim().toLowerCase();
   const show = (...texts: string[]) => !q || texts.some(t => t.toLowerCase().includes(q));
@@ -244,7 +467,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     appearance: show('Light Mode', 'Switch between dark and light theme'),
     security:   show('Require PIN on Wake', 'Re-lock vault when the app regains focus')
              || show('Auto-lock After', 'Automatically lock after this period of inactivity')
-             || show('Change PIN', 'Clear current PIN and set a new one on next lock'),
+             || show('Change PIN', 'Verify your current PIN before setting a new one'),
     clipboard:  show('Password Reveal Duration', 'How long a password stays visible after clicking Show')
              || show('Auto-clear Clipboard', 'Remove copied password from clipboard automatically')
              || show('Clear After'),
@@ -252,6 +475,8 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Auto-connect on Startup', 'Connect to the last-used COM port automatically')
              || show('Connection Timeout', 'Abort the connection attempt after this duration')
              || show('Retry Attempts', 'Number of times to retry a failed connection'),
+    sync:       show('Backup & Sync', 'Live sync push alerts + 15 minute fallback polling')
+             || show('Mode', 'Open Sync Settings', 'Sync Now', 'Last successful sync', 'Last sync error', '2FA', 'Authenticator', '2FA status'),
     data:       show('Export Vault', 'Save an encrypted backup of your passwords')
              || show('Import Vault', 'Restore passwords from an encrypted backup')
              || show('App Version', '0.1.0') || show('Stack', 'Electron React C++')
@@ -261,9 +486,39 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Open Extension Folder', 'Load the extension in Chrome or Firefox'),
   };
   const noResults = q.length > 0 && !Object.values(showSec).some(Boolean);
+  const formatSyncTime = (timestamp?: number) =>
+    timestamp ? new Date(timestamp).toLocaleString() : 'Never';
+  const syncStep = syncMode === 'local'
+    ? 'local'
+    : !syncStatus?.configured
+      ? 'configure'
+      : !syncStatus.loggedIn
+        ? 'auth'
+        : !vaultKeyStatus?.hasRemoteEnvelope || !vaultKeyStatus?.hasLocalUnlockedKey
+          ? 'finish-setup'
+            : 'ready';
+  const syncModeLabel = syncMode === 'local' ? 'This Device Only' : 'Backed Up & Synced';
+  const syncModeDescription = syncMode === 'local'
+    ? 'Passwords stay on this device only.'
+    : 'Passwords stay on this device and are backed up for your other devices.';
+  const syncSettingsDescription = syncMode === 'local'
+    ? 'Enable backup and account setup from the guided sync modal.'
+    : syncStep === 'configure'
+      ? 'Sync is enabled but not configured. Open Sync Settings to connect your server and account.'
+      : syncStep === 'auth'
+        ? 'Server is configured. Open Sync Settings to sign in or create your synced account.'
+        : syncStep === 'finish-setup'
+          ? 'Account is signed in. Open Sync Settings to finish secure sync setup with your account password.'
+          : 'This device is fully synced and ready.';
+  const canSubmitPinChange =
+    currentPin.length === PIN_LENGTH
+    && newPin.length === PIN_LENGTH
+    && confirmPin.length === PIN_LENGTH
+    && !pinChangeBusy;
 
   return (
-    <div className="px-6 py-6 max-w-2xl w-full mx-auto">
+    <>
+      <div className="px-6 py-6 max-w-2xl w-full mx-auto">
 
       {/* Page header */}
       <div className="flex items-start gap-4 mb-5">
@@ -356,11 +611,12 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                 onChange={v => sel('setting-autolock', v, setAutoLock)}
               />
             )}
-            {show('Change PIN', 'Clear current PIN and set a new one on next lock') && (
+            {show('Change PIN', 'Verify your current PIN before setting a new one') && (
               <ButtonRow
                 label="Change PIN"
-                description="Clear current PIN and set a new one on next lock"
+                description="Verify your current PIN before setting a new one"
                 buttonLabel="Change"
+                feedback={pinFeedback}
                 onClick={handleChangePIN}
               />
             )}
@@ -499,6 +755,89 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
           </Section>
         )}
 
+        {/* Backup & Sync */}
+        {showSec.sync && (
+          <Section title="Backup & Sync" icon={Cloud}>
+            <InfoRow label="Mode" value={syncModeLabel} />
+
+            <div className="px-5 py-4">
+              <p className="text-[14px] text-lo leading-snug">{syncModeDescription}</p>
+            </div>
+
+            <ButtonRow
+              label="Sync Settings"
+              description={syncSettingsDescription}
+              buttonLabel="Open Sync Settings"
+              onClick={handleOpenSyncWizard}
+            />
+
+            {syncMode === 'synced' && (
+              <ButtonRow
+                label="Sync Now"
+                description="Push local changes and pull remote changes immediately."
+                buttonLabel={syncNowBusy ? 'Syncing...' : 'Sync Now'}
+                busy={syncNowBusy}
+                onClick={handleSyncNow}
+              />
+            )}
+
+            {syncMode === 'synced' && (
+              <>
+                <InfoRow
+                  label="Server Status"
+                  value={syncStatus?.configured ? 'Configured' : 'Not Configured'}
+                />
+                <InfoRow
+                  label="Session Status"
+                  value={syncStatus?.loggedIn ? 'Logged In' : 'Logged Out'}
+                />
+                <InfoRow
+                  label="Last Successful Sync"
+                  value={formatSyncTime(syncStatus?.lastSyncAt)}
+                />
+                <InfoRow
+                  label="Last Sync Attempt"
+                  value={formatSyncTime(syncStatus?.lastSyncAttemptAt)}
+                />
+                {syncStatus?.lastSyncError && (
+                  <div className="px-5 py-4">
+                    <p className="text-[13px] text-err">Last sync error: {syncStatus.lastSyncError}</p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {syncMode === 'synced' && syncStatus?.loggedIn && (
+              <>
+                <InfoRow
+                  label="2FA Status"
+                  value={
+                    mfaStatus?.pendingEnrollment
+                      ? 'Pending Enrollment'
+                      : mfaStatus?.mfaEnabled
+                        ? 'Enabled'
+                        : 'Disabled'
+                  }
+                />
+                <ButtonRow
+                  label="Manage Account Security"
+                  description="Manage authenticator-based 2FA and account security options in Sync Settings."
+                  buttonLabel="Open Sync Settings"
+                  onClick={handleOpenSyncWizard}
+                />
+              </>
+            )}
+
+            {syncFeedback && (
+              <div className="px-5 py-4">
+                <p className={`text-[13px] ${syncFeedback.type === 'ok' ? 'text-ok' : 'text-err'}`}>
+                  {syncFeedback.message}
+                </p>
+              </div>
+            )}
+          </Section>
+        )}
+
         {/* Data */}
         {showSec.data && (
           <Section title="Data" icon={HardDrive}>
@@ -537,6 +876,100 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
         )}
 
       </div>
-    </div>
+      </div>
+
+      {pinChangeOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+        >
+          <div className="bg-card border border-edge rounded-2xl w-full max-w-md shadow-2xl animate-[fadeSlideUp_0.2s_ease-out]">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-edge">
+              <div>
+                <h2 className="text-[18px] font-semibold text-hi">Change Unlock PIN</h2>
+                <p className="text-[13px] text-lo mt-1">Enter your current PIN, then choose a new 6-digit PIN.</p>
+              </div>
+              <button
+                onClick={closePinChangeModal}
+                disabled={pinChangeBusy}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-dim hover:text-hi hover:bg-input active:scale-90 transition-all duration-100 disabled:opacity-40"
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleSubmitPinChange();
+              }}
+              className="px-6 py-5 flex flex-col gap-3"
+            >
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[13px] text-lo">Current PIN</span>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="current-password"
+                  maxLength={PIN_LENGTH}
+                  value={currentPin}
+                  onChange={(event) => setCurrentPin(sanitizePinInput(event.target.value))}
+                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3.5 py-2.5 outline-none focus:border-accent-edge transition-colors"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[13px] text-lo">New PIN</span>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="new-password"
+                  maxLength={PIN_LENGTH}
+                  value={newPin}
+                  onChange={(event) => setNewPin(sanitizePinInput(event.target.value))}
+                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3.5 py-2.5 outline-none focus:border-accent-edge transition-colors"
+                />
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-[13px] text-lo">Confirm New PIN</span>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="new-password"
+                  maxLength={PIN_LENGTH}
+                  value={confirmPin}
+                  onChange={(event) => setConfirmPin(sanitizePinInput(event.target.value))}
+                  className="bg-input border border-edge text-hi text-[15px] rounded-xl px-3.5 py-2.5 outline-none focus:border-accent-edge transition-colors"
+                />
+              </label>
+
+              {pinChangeError && (
+                <p className="text-[13px] text-err mt-0.5">{pinChangeError}</p>
+              )}
+
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={closePinChangeModal}
+                  disabled={pinChangeBusy}
+                  className="flex-1 py-3 rounded-xl text-[15px] font-medium text-lo bg-input border border-edge hover:text-hi active:scale-[0.98] transition-all duration-100 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!canSubmitPinChange}
+                  className="flex-1 py-3 rounded-xl text-[15px] font-medium text-white bg-accent-solid hover:bg-accent-hover active:scale-[0.98] transition-all duration-100 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {pinChangeBusy && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {pinChangeBusy ? 'Changing...' : 'Change PIN'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </>
   );
 };

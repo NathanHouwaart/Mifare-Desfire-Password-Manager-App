@@ -6,9 +6,9 @@
  *
  * card:peekUid        — lightweight UID probe, null when no card
  * card:isInitialised  — true if vault AID 505700 exists on card
- * card:init           — full 11-step secure init (derives keys from machineSecret + UID)
+ * card:init           — full 11-step secure init (derives keys from active root secret + UID)
  * card:freeMemory     — free EEPROM bytes on the PICC
- * card:format         — FormatPICC + wipe vault DB
+ * card:format         - FormatPICC only (card reset)
  * card:getAids        — list of AIDs on the card
  *
  * Must only run in the main process.
@@ -17,9 +17,8 @@
 import { ipcMain } from 'electron';
 import crypto from 'node:crypto';
 import { NfcCppBinding } from './bindings.js';
-import { getMachineSecret } from './main.js';
+import { getCryptoRootSecret } from './main.js';
 import { deriveCardKey, zeroizeBuffer } from './keyDerivation.js';
-import { wipeVault } from './vault.js';
 import { beginCardWait } from './nfcCancel.js';
 
 const VAULT_AID: [number, number, number] = [0x50, 0x57, 0x00];
@@ -56,6 +55,17 @@ function uidToBuffer(uidHex: string): Buffer {
   return Buffer.from(uidHex.replace(/:/g, ''), 'hex');
 }
 
+function isTransientCompatibilityError(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes('no card') ||
+    text.includes('card not found') ||
+    text.includes('card timeout') ||
+    text.includes('timed out') ||
+    text.includes('tap cancelled')
+  );
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 export function registerCardHandlers(
@@ -73,8 +83,51 @@ export function registerCardHandlers(
     return nfcBinding.isCardInitialised();
   });
   // ── card:probe ──────────────────────────────────────────────────────────
-  ipcMain.handle('card:probe', (): Promise<{ uid: string | null; isInitialised: boolean }> => {
-    return nfcBinding.probeCard();
+  ipcMain.handle('card:probe', async (): Promise<{
+    uid: string | null;
+    isInitialised: boolean;
+    isCompatibleWithCurrentVault: boolean | null;
+    compatibilityError?: string;
+  }> => {
+    const probe = await nfcBinding.probeCard();
+    if (probe.uid === null || !probe.isInitialised) {
+      return {
+        ...probe,
+        isCompatibleWithCurrentVault: null,
+      };
+    }
+
+    const rootSecret = getCryptoRootSecret();
+    const uidBuf = uidToBuffer(probe.uid);
+    const readKey = deriveCardKey(rootSecret, uidBuf, 0x02);
+    let cardSecret: Buffer | null = null;
+
+    try {
+      const secret = await nfcBinding.readCardSecret(Array.from(readKey));
+      cardSecret = Buffer.from(secret);
+      return {
+        ...probe,
+        isCompatibleWithCurrentVault: true,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (isTransientCompatibilityError(message)) {
+        return {
+          ...probe,
+          isCompatibleWithCurrentVault: null,
+          compatibilityError: 'Could not verify compatibility. Keep the card on the reader and probe again.',
+        };
+      }
+      return {
+        ...probe,
+        isCompatibleWithCurrentVault: false,
+        compatibilityError: message,
+      };
+    } finally {
+      if (cardSecret) zeroizeBuffer(cardSecret);
+      zeroizeBuffer(readKey);
+      zeroizeBuffer(rootSecret);
+    }
   });
   // ── card:init ───────────────────────────────────────────────────────────────
   ipcMain.handle('card:init', async (): Promise<boolean> => {
@@ -83,11 +136,11 @@ export function registerCardHandlers(
     const uidHex = await waitForCard(nfcBinding, signal);
     log('info', `card:init — card detected (${uidHex}), deriving keys...`);
 
-    const machineSecret = getMachineSecret();
+    const rootSecret = getCryptoRootSecret();
     const uidBuf        = uidToBuffer(uidHex);
 
-    const appMasterKey = deriveCardKey(machineSecret, uidBuf, 0x01);
-    const readKey      = deriveCardKey(machineSecret, uidBuf, 0x02);
+    const appMasterKey = deriveCardKey(rootSecret, uidBuf, 0x01);
+    const readKey      = deriveCardKey(rootSecret, uidBuf, 0x02);
     const cardSecret   = crypto.randomBytes(16);
 
     try {
@@ -103,6 +156,7 @@ export function registerCardHandlers(
       zeroizeBuffer(appMasterKey);
       zeroizeBuffer(readKey);
       zeroizeBuffer(cardSecret);
+      zeroizeBuffer(rootSecret);
     }
   });
 
@@ -113,11 +167,10 @@ export function registerCardHandlers(
 
   // ── card:format ─────────────────────────────────────────────────────────────
   ipcMain.handle('card:format', async (): Promise<boolean> => {
-    log('warn', 'card:format — FormatPICC requested, all card data will be destroyed.');
+    log('warn', 'card:format - FormatPICC requested; card data will be destroyed.');
     const result = await nfcBinding.formatCard();
     if (result) {
-      wipeVault();
-      log('warn', 'card:format — card formatted and vault database wiped.');
+      log('warn', 'card:format - card formatted to factory state (vault database unchanged).');
     }
     return result;
   });
@@ -127,3 +180,4 @@ export function registerCardHandlers(
     return nfcBinding.getCardApplicationIds();
   });
 }
+
