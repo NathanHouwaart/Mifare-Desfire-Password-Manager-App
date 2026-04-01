@@ -3,6 +3,7 @@
   "name": "SecurePass",
   "version": "0.1.0",
   "description": "NFC-backed password autofill powered by SecurePass",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkElqD6GGPEIhjX4bOUf53Ai6fkfKJL7zJjEbADsduINJWee//CCb6XEjACIzv5dTGwWuDNq0/5GRhDSEwVMqoMWyIjb4dql4g/jwRqdJQ7QxXJjDC1lBjgYxXtJt6Kgll+osGDwjQhcPlTJGleA2cF+QYBmF4DR964SoEw8l8nZCzhQHqDu3ilB0/c1WOYakaz8Ywow/iPAwnkxafLjr7Djh72kjmBPUPB5cIbXz63Wvw5ieisPbEvTJfsGoJHq32TUzCM6SpYjjgve9Al2vymcwI0ocs1fLaAJFrOG8yhMFm5yM7PZ+mmMa7LXqjGL1uznbbcQfu6OBnT8AHfz4ywIDAQAB",
 
   "permissions": [
     "nativeMessaging",
