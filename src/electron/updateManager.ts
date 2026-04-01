@@ -7,8 +7,15 @@ import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from 'electron-u
 
 import { isDev } from './utils.js';
 
-// electron-updater is CJS; namespace import avoids ESM named-export runtime errors.
-const { autoUpdater } = electronUpdater as typeof import('electron-updater');
+type ElectronUpdaterNamespace = typeof import('electron-updater') & {
+  default?: Partial<typeof import('electron-updater')>;
+};
+
+const electronUpdaterNs = electronUpdater as ElectronUpdaterNamespace;
+const autoUpdater = electronUpdaterNs.autoUpdater ?? electronUpdaterNs.default?.autoUpdater;
+if (!autoUpdater) {
+  throw new Error('electron-updater autoUpdater export not found');
+}
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SHARED_INSTALLATION_ID_FILE = 'sync-installation-id.txt';
