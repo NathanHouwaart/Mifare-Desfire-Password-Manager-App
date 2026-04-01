@@ -4,6 +4,7 @@
   "path": "C:\\Users\\Nathan\\Documents\\PasswordManagerApp\\native-host\\run-host.bat",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://iikoeapgfdcdndglooddmcinokjdcmfo/"
+    "chrome-extension://iikoeapgfdcdndglooddmcinokjdcmfo/",
+    "chrome-extension://dodjnfhhjaiikoaollhoakocekglpgoo/"
   ]
 }
