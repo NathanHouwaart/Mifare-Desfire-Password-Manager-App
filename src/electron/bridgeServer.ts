@@ -243,7 +243,7 @@ async function handleRequest(
   }
 
   if (deps?.isVaultUnlocked && !deps.isVaultUnlocked()) {
-    return { id, error: 'Vault is locked. Unlock SecurePass first.' };
+    return { id, error: 'Vault is locked. Unlock SecurePass NFC first.' };
   }
 
   if (action === 'list_for_domain') {

@@ -151,6 +151,21 @@ function App() {
     }
   }, []);
 
+  const promoteSyncModeFromPersistedSession = useCallback(async () => {
+    const currentMode = (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local';
+    if (currentMode === 'synced') return;
+
+    try {
+      const status = await window.electron['sync:getStatus']();
+      if (!status.configured || !status.loggedIn) return;
+      localStorage.setItem('setting-sync-mode', 'synced');
+      setSyncMode('synced');
+      window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode: 'synced' } }));
+    } catch {
+      // Best effort hydration for installs where localStorage was cleared.
+    }
+  }, []);
+
   const refreshGuideCredentialStatus = useCallback(async () => {
     try {
       const list = await window.electron['vault:listEntries']();
@@ -204,6 +219,10 @@ function App() {
   useEffect(() => {
     if (path === '/') navigate('/passwords', { replace: true });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    void promoteSyncModeFromPersistedSession();
+  }, [promoteSyncModeFromPersistedSession]);
 
   // ── Require PIN on wake ──────────────────────────────────────────────────
   // When enabled, lock immediately on focus regain after a real blur event.

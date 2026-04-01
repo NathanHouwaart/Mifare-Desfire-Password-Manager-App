@@ -273,6 +273,33 @@ type SyncUpdateDeviceDto = {
   name: string;
 };
 
+type AppUpdateState =
+  | 'idle'
+  | 'checking'
+  | 'update-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'up-to-date'
+  | 'not-eligible'
+  | 'error';
+
+type AppUpdateStatusDto = {
+  state: AppUpdateState;
+  currentVersion: string;
+  availableVersion?: string;
+  releaseDate?: string;
+  releaseName?: string;
+  stagingPercentage?: number;
+  eligibleForRollout?: boolean;
+  rolloutBucket?: number;
+  lastCheckedAt?: number;
+  downloadPercent?: number;
+  downloadBytesPerSecond?: number;
+  downloadTransferred?: number;
+  downloadTotal?: number;
+  error?: string;
+};
+
 type PinSetResultDto = {
   ok: true;
 };
@@ -329,6 +356,7 @@ type RendererEvents = {
   'nfc:connectionChanged': NfcConnectionStateDto;
   'securepass:syncInvite': SyncInvitePayloadDto;
   'sync:applied': SyncAppliedEventDto;
+  'update:statusChanged': AppUpdateStatusDto;
 };
 
 // 1) canonical single source: define your IPC handlers here
@@ -368,8 +396,16 @@ type IPCHandlers = {
   'nfc:cancel': () => Promise<void>;
   /** Marks the app vault as locked in the main process. */
   'app:lock': () => Promise<{ ok: true }>;
+  /** Returns app semantic version from package metadata. */
+  'app:getVersion': () => Promise<string>;
   /** Relaunches the app process and exits the current instance. */
   'app:relaunch': () => Promise<{ ok: true }>;
+  /** Returns current app updater state. */
+  'update:getStatus': () => Promise<AppUpdateStatusDto>;
+  /** Triggers a manual update check against the stable release feed. */
+  'update:checkNow': () => Promise<AppUpdateStatusDto>;
+  /** Installs the downloaded update and restarts the app. */
+  'update:installNow': () => Promise<{ ok: true } | { ok: false; error: string }>;
   'pin:has': () => Promise<boolean>;
   'pin:set': (pin: string) => Promise<PinSetResultDto>;
   'pin:verify': (pin: string) => Promise<PinVerifyResultDto>;
@@ -481,6 +517,7 @@ type ExposedElectronAPI = {
   onNfcConnectionChange: (callback: (state: NfcConnectionStateDto) => void) => () => void;
   onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => () => void;
   onSyncApplied: (callback: (payload: SyncAppliedEventDto) => void) => () => void;
+  onUpdateStatusChanged: (callback: (payload: AppUpdateStatusDto) => void) => () => void;
 };
 
 // 4) augment global Window so you only maintain IPCHandlers

@@ -656,9 +656,6 @@ export const PasswordsPage = ({
 
   const tryAutoSyncAfterVaultChange = useCallback(async () => {
     try {
-      const syncMode = localStorage.getItem('setting-sync-mode') ?? 'local';
-      if (syncMode !== 'synced') return;
-
       const status = await window.electron['sync:getStatus']();
       if (!status.configured || !status.loggedIn) return;
 

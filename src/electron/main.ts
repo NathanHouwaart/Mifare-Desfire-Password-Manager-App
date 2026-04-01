@@ -17,6 +17,7 @@ import {
   getSyncStatus,
   loginSync,
   openSyncEventsStream,
+  pullSync,
   runFullSync,
 } from './syncService.js';
 import { clearUnlockedVaultRootKey, getUnlockedVaultRootKey } from './vaultKeyManager.js';
@@ -25,6 +26,7 @@ import { cancelCardWait } from './nfcCancel.js';
 import { registerNativeHost }   from './nativeHostRegistrar.js';
 import { hasPinConfigured, setPin, verifyPin, changePin, startPinRecovery, completePinRecovery, resetPin } from './pinManager.js';
 import type { NfcCppBinding as NfcCppBindingType } from './bindings.js';
+import { registerUpdateManager, type UpdateManagerController } from './updateManager.js';
 
 // Add global error handlers to catch crashes
 process.on('uncaughtException', (error) => {
@@ -63,6 +65,7 @@ let lastSyncEventCursorSeen = 0;
 let pendingSyncInvite: SyncInvitePayloadDto | null = null;
 let hotplugCheckInFlight = false;
 let pendingReconnectPort: string | null = null;
+let updateManager: UpdateManagerController | null = null;
 
 if (process.platform === 'win32') {
   // Keep taskbar grouping/icon tied to our explicit app identity.
@@ -478,6 +481,10 @@ function handleSyncStreamEvent(eventName: string, data: string): void {
   // Catch up quickly if the stream reports a newer cursor than local state,
   // and coalesce bursts into one sync run.
   if (typeof payload.cursor === 'number' && payload.cursor <= status.cursor) return;
+  if (eventName === 'sync_change') {
+    const cursorLabel = typeof payload.cursor === 'number' ? String(payload.cursor) : 'unknown';
+    nfcLog('info', `[sync-events] remote change detected (cursor=${cursorLabel}); scheduling sync`);
+  }
   scheduleSyncFromRemoteEvent();
 }
 
@@ -556,8 +563,10 @@ async function runSyncEventsLoop(signal: AbortSignal): Promise<void> {
     }
 
     try {
+      nfcLog('info', '[sync-events] stream connected');
       await consumeSyncEventStream(signal);
       if (signal.aborted) break;
+      nfcLog('warn', '[sync-events] stream ended; reconnecting');
       await waitWithAbort(signal, SYNC_EVENTS_RETRY_BASE_MS);
       retryDelayMs = SYNC_EVENTS_RETRY_BASE_MS;
     } catch (err) {
@@ -616,7 +625,21 @@ async function runBackgroundSync(reason: BackgroundSyncReason): Promise<void> {
 
   autoSyncRunning = true;
   try {
-    const result = await runFullSync();
+    const result: SyncRunResultDto = reason === 'sse'
+      ? {
+          push: {
+            sent: 0,
+            applied: 0,
+            skipped: 0,
+            // Pull updates the shared cursor state; mirror that value for the synthetic push slot.
+            cursor: 0,
+          },
+          pull: await pullSync(),
+        }
+      : await runFullSync();
+    if (reason === 'sse') {
+      result.push.cursor = result.pull.cursor;
+    }
     const didWork = result.push.sent > 0 || result.pull.received > 0;
     if (didWork) {
       nfcLog(
@@ -759,9 +782,9 @@ app.on('ready', async () => {
     console.log('[invite] Invite link received while app is not running.');
     await dialog.showMessageBox({
       type: 'info',
-      title: 'SecurePass Is Not Running',
-      message: 'SecurePass must already be open to use this invite link.',
-      detail: 'Open SecurePass first, then open the invite link again.',
+      title: 'SecurePass NFC Is Not Running',
+      message: 'SecurePass NFC must already be open to use this invite link.',
+      detail: 'Open SecurePass NFC first, then open the invite link again.',
       buttons: ['OK'],
       defaultId: 0,
       noLink: true,
@@ -799,6 +822,7 @@ app.on('ready', async () => {
     setVaultLocked();
     return { ok: true as const };
   });
+  ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('app:relaunch', () => {
     app.relaunch();
     setImmediate(() => app.exit(0));
@@ -973,7 +997,7 @@ app.on('ready', async () => {
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
-    title: 'SecurePass',
+    title: 'SecurePass NFC',
     icon: iconImg,
     webPreferences: {
       preload: getPreloadPath(),
@@ -1000,6 +1024,7 @@ app.on('ready', async () => {
   mainWindow.webContents.on('did-finish-load', () => {
     applyLockedZoom(mainWindow);
     publishNfcConnectionState('startup');
+    updateManager?.publishCurrentStatus();
     if (pendingSyncInvite) {
       mainWindow?.webContents.send('securepass:syncInvite', pendingSyncInvite);
     }
@@ -1014,6 +1039,14 @@ app.on('ready', async () => {
   } else {
     mainWindow.loadFile(getUIPath());
   }
+
+  updateManager = registerUpdateManager({
+    log: nfcLog,
+    publishStatus: (status) => {
+      mainWindow?.webContents.send('update:statusChanged', status);
+    },
+  });
+  updateManager.start();
 });
 
 ipcMain.handle('greet', async (_event: IpcMainInvokeEvent, name: string) => {
@@ -1213,6 +1246,7 @@ app.on('before-quit', (event) => {
   void (async () => {
     try {
       stopBackgroundSyncLoop();
+      updateManager?.stop();
 
       // Stop new extension-host requests and cancel any active card wait loop.
       cancelCardWait();

@@ -783,7 +783,7 @@ export function SyncSetupFlow({
             <div className="flex min-w-0 items-center gap-3">
               <SetupBrandShield size="sm" />
               <div className="min-w-0">
-                <p className="truncate text-[16px] font-semibold leading-tight text-hi">SecurePass Sync Setup</p>
+                <p className="truncate text-[16px] font-semibold leading-tight text-hi">SecurePass NFC Sync Setup</p>
                 <p className="truncate text-[14px] text-lo">
                   {bootstrapping
                     ? 'Loading...'

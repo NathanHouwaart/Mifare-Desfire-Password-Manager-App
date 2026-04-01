@@ -36,7 +36,7 @@ export const SplashScreen = ({ onDone }: { onDone: () => void }) => {
 
       {/* ── App name + subtitle ──────────────────────────────────── */}
       <div className="animate-[splashFadeUp_0.5s_ease-out_0.55s_both] mt-7 text-center">
-        <h1 className="text-[32px] font-bold tracking-tight text-hi">SecurePass</h1>
+        <h1 className="text-[32px] font-bold tracking-tight text-hi">SecurePass NFC</h1>
         <p className="text-[15px] text-lo mt-1.5 tracking-wide">NFC Password Manager</p>
       </div>
 

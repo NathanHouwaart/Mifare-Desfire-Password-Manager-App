@@ -1,8 +1,9 @@
 {
   "name": "securepass",
+  "productName": "SecurePass NFC",
   "description": "NFC-backed password manager",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.99.0",
   "author": "Nathan Houwaart n.m.houwaart@hva.nl",
   "type": "module",
   "main": "dist-electron/main.js",
@@ -22,7 +23,9 @@
     "build:host": "npx @yao-pkg/pkg native-host/host.js --target node18-win-x64 --output native-host/host.exe",
     "download:cp210x": "node scripts/download-cp210x.js",
     "dist:win": "npm run download:cp210x && npm run build:host && npm run transpile:electron && npm run build && electron-builder --win --x64",
+    "dist:win:publish": "npm run download:cp210x && npm run build:host && npm run transpile:electron && npm run build && electron-builder --win --x64 --publish always",
     "dist:linux": "npm run transpile:electron && npm run build && electron-builder --linux --x64",
+    "dist:linux:publish": "npm run transpile:electron && npm run build && electron-builder --linux --x64 --publish always",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "binary": {
@@ -36,6 +39,7 @@
     "@types/qrcode": "^1.5.6",
     "better-sqlite3": "^12.6.2",
     "cmake-js": "^7.3.1",
+    "electron-updater": "^6.6.2",
     "lucide-react": "^0.575.0",
     "node-addon-api": "^8.5.0",
     "qrcode": "^1.5.4",
@@ -114,7 +118,7 @@
     ],
     "protocols": [
       {
-        "name": "SecurePass Invite Links",
+        "name": "SecurePass NFC Invite Links",
         "schemes": [
           "securepass"
         ]
@@ -122,20 +126,15 @@
     ],
     "linux": {
       "target": [
-        "deb"
+        "AppImage"
       ],
       "category": "Utility",
       "icon": "assets/favicon.png"
     },
     "win": {
       "target": "nsis",
-      "artifactName": "SecurePass-Setup-${version}.exe",
-      "signExts": [],
-      "signAndEditExecutable": false
-    },
-    "deb": {
-      "maintainer": "Nathan Houwaart n.m.houwaart@hva.nl",
-      "afterInstall": "packaging/linux/debian/postinst"
+      "artifactName": "SecurePass-NFC-Setup-${version}.exe",
+      "signExts": []
     },
     "nsis": {
       "oneClick": false,
@@ -143,7 +142,15 @@
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "SecurePass"
-    }
+      "shortcutName": "SecurePass NFC"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "NathanHouwaart",
+        "repo": "Mifare-Desfire-Password-Manager-App",
+        "releaseType": "release"
+      }
+    ]
   }
 }

@@ -116,7 +116,7 @@ export const DebugTerminal = ({ isOpen, onOpenChange }: DebugTerminalProps) => {
   const handleExport = async () => {
     if (logs.length === 0) return;
     const header = [
-      'SecurePass — NFC Output Log',
+      'SecurePass NFC — Output Log',
       `Exported: ${new Date().toLocaleString()}`,
       `Entries:  ${logs.length}`,
       '─'.repeat(60),

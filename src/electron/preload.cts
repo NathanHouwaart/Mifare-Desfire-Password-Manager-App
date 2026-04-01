@@ -12,6 +12,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
     onNfcConnectionChange: (callback: (state: NfcConnectionStateDto) => void) => ipcOn('nfc:connectionChanged', callback),
     onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => ipcOn('securepass:syncInvite', callback),
     onSyncApplied: (callback: (payload: SyncAppliedEventDto) => void) => ipcOn('sync:applied', callback),
+    onUpdateStatusChanged: (callback: (payload: AppUpdateStatusDto) => void) => ipcOn('update:statusChanged', callback),
     saveFile: (filename: string, content: string) => ipcInvoke("saveFile", filename, content),
     getFirmwareVersion: () => ipcInvoke("getFirmwareVersion"),
     runSelfTests: () => ipcInvoke("runSelfTests"),
@@ -38,7 +39,11 @@ electron.contextBridge.exposeInMainWorld("electron", {
     // Cancel any in-progress card-wait operation
     'nfc:cancel': () => ipcInvoke('nfc:cancel'),
     'app:lock': () => ipcInvoke('app:lock'),
+    'app:getVersion': () => ipcInvoke('app:getVersion'),
     'app:relaunch': () => ipcInvoke('app:relaunch'),
+    'update:getStatus': () => ipcInvoke('update:getStatus'),
+    'update:checkNow': () => ipcInvoke('update:checkNow'),
+    'update:installNow': () => ipcInvoke('update:installNow'),
 
     // App-lock PIN operations (main-process managed)
     'pin:has':    () => ipcInvoke('pin:has'),

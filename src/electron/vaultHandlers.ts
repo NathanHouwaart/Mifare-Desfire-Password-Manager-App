@@ -13,7 +13,7 @@
  * Must only run in the main process.
  */
 
-import { ipcMain, IpcMainInvokeEvent, dialog, BrowserWindow } from 'electron';
+import { ipcMain, IpcMainInvokeEvent, dialog, BrowserWindow, app } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { NfcCppBinding } from './bindings.js';
@@ -122,7 +122,7 @@ export function registerVaultHandlers(
 ): void {
   const assertVaultUnlocked = () => {
     if (deps?.isVaultUnlocked && !deps.isVaultUnlocked()) {
-      throw Object.assign(new Error('Vault is locked. Unlock SecurePass first.'), { code: 'VAULT_LOCKED' });
+      throw Object.assign(new Error('Vault is locked. Unlock SecurePass NFC first.'), { code: 'VAULT_LOCKED' });
     }
   };
 
@@ -263,7 +263,7 @@ export function registerVaultHandlers(
     const rows = getAllEntryRows();
     const payload = {
       version:    1,
-      appVersion: '0.1.0',
+      appVersion: app.getVersion(),
       exportedAt: Date.now(),
       note:       'Restore requires the same NFC card and matching root key (local machine secret or unlocked synced vault key).',
       entries:    rows.map(r => ({
