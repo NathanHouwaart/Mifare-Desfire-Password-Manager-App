@@ -10,7 +10,7 @@
 - [ ] `npm audit --omit=dev --audit-level=critical` reviewed and accepted or fixed (matches CI gate).
 - [ ] Known current high advisories tracked for remediation (not CI-gating):
   - [ ] `picomatch` (glob matching/ReDoS advisories)
-  - [ ] `tar` via `cmake-js@7.x` dependency chain
+  - [ ] `tar` via `cmake-js@8.0.0` dependency chain
 
 ## Updater Validation (Installed Builds)
 - [ ] Auto update toggle persists across restarts.
