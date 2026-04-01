@@ -3,7 +3,7 @@
   "productName": "SecurePass NFC",
   "description": "NFC-backed password manager",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Nathan Houwaart n.m.houwaart@hva.nl",
   "type": "module",
   "main": "dist-electron/main.js",
