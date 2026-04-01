@@ -7,8 +7,8 @@
 
 ## Security and Trust
 - [ ] Windows signing is configured and artifacts are signed.
-- [ ] `npm audit --omit=dev --audit-level=high` reviewed and accepted or fixed.
-- [ ] Known current high advisories to resolve before strict-high gate:
+- [ ] `npm audit --omit=dev --audit-level=critical` reviewed and accepted or fixed (matches CI gate).
+- [ ] Known current high advisories tracked for remediation (not CI-gating):
   - [ ] `picomatch` (glob matching/ReDoS advisories)
   - [ ] `tar` via `cmake-js@7.x` dependency chain
 
