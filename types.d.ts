@@ -300,6 +300,10 @@ type AppUpdateStatusDto = {
   error?: string;
 };
 
+type AppUpdatePreferencesDto = {
+  autoDownloadEnabled: boolean;
+};
+
 type PinSetResultDto = {
   ok: true;
 };
@@ -406,6 +410,10 @@ type IPCHandlers = {
   'update:checkNow': () => Promise<AppUpdateStatusDto>;
   /** Installs the downloaded update and restarts the app. */
   'update:installNow': () => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Returns persisted updater preferences. */
+  'update:getPreferences': () => Promise<AppUpdatePreferencesDto>;
+  /** Persists updater preferences. */
+  'update:setPreferences': (payload: AppUpdatePreferencesDto) => Promise<AppUpdatePreferencesDto>;
   'pin:has': () => Promise<boolean>;
   'pin:set': (pin: string) => Promise<PinSetResultDto>;
   'pin:verify': (pin: string) => Promise<PinVerifyResultDto>;

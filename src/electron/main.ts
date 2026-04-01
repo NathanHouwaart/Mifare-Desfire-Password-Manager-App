@@ -71,6 +71,8 @@ type UpdateIpcFacade = {
   getStatus: () => AppUpdateStatusDto;
   checkNow: () => Promise<AppUpdateStatusDto>;
   installNow: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  getPreferences: () => AppUpdatePreferencesDto;
+  setPreferences: (next: AppUpdatePreferencesDto) => AppUpdatePreferencesDto;
 };
 
 if (process.platform === 'win32') {
@@ -802,6 +804,12 @@ function createUnavailableUpdateFacade(reason: string): UpdateIpcFacade {
       ok: false as const,
       error: message,
     }),
+    getPreferences: () => ({
+      autoDownloadEnabled: true,
+    }),
+    setPreferences: (next) => ({
+      autoDownloadEnabled: Boolean(next.autoDownloadEnabled),
+    }),
   };
 }
 
@@ -811,10 +819,14 @@ function registerDeterministicUpdateIpcHandlers(): void {
   ipcMain.removeHandler('update:getStatus');
   ipcMain.removeHandler('update:checkNow');
   ipcMain.removeHandler('update:installNow');
+  ipcMain.removeHandler('update:getPreferences');
+  ipcMain.removeHandler('update:setPreferences');
 
   ipcMain.handle('update:getStatus', async () => updateIpcFacade.getStatus());
   ipcMain.handle('update:checkNow', async () => updateIpcFacade.checkNow());
   ipcMain.handle('update:installNow', async () => updateIpcFacade.installNow());
+  ipcMain.handle('update:getPreferences', async () => updateIpcFacade.getPreferences());
+  ipcMain.handle('update:setPreferences', async (_event: IpcMainInvokeEvent, next: AppUpdatePreferencesDto) => updateIpcFacade.setPreferences(next));
 }
 
 registerDeterministicUpdateIpcHandlers();
@@ -1045,8 +1057,8 @@ app.on('ready', async () => {
   }
 
   mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+    width: 1000,
+    height: 800,
     title: 'SecurePass NFC',
     icon: iconImg,
     webPreferences: {
@@ -1102,6 +1114,8 @@ app.on('ready', async () => {
       getStatus: () => manager.getStatus(),
       checkNow: () => manager.checkNow(),
       installNow: () => manager.installNow(),
+      getPreferences: () => manager.getPreferences(),
+      setPreferences: (next) => manager.setPreferences(next),
     };
     manager.start();
   } catch (error) {

@@ -44,6 +44,8 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'update:getStatus': () => ipcInvoke('update:getStatus'),
     'update:checkNow': () => ipcInvoke('update:checkNow'),
     'update:installNow': () => ipcInvoke('update:installNow'),
+    'update:getPreferences': () => ipcInvoke('update:getPreferences'),
+    'update:setPreferences': (payload: AppUpdatePreferencesDto) => ipcInvoke('update:setPreferences', payload),
 
     // App-lock PIN operations (main-process managed)
     'pin:has':    () => ipcInvoke('pin:has'),
