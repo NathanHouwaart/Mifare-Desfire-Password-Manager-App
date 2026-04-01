@@ -2,9 +2,13 @@ import { app, ipcMain } from 'electron';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { autoUpdater, type ProgressInfo, type UpdateDownloadedEvent, type UpdateInfo } from 'electron-updater';
+import * as electronUpdater from 'electron-updater';
+import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from 'electron-updater';
 
 import { isDev } from './utils.js';
+
+// electron-updater is CJS; namespace import avoids ESM named-export runtime errors.
+const { autoUpdater } = electronUpdater as typeof import('electron-updater');
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SHARED_INSTALLATION_ID_FILE = 'sync-installation-id.txt';
