@@ -6,6 +6,7 @@ import {
   Cpu,
   CreditCard,
   Settings,
+  Ticket,
   Info,
   ShieldCheck,
   Lock,
@@ -18,7 +19,7 @@ const NAV_ITEMS = [
   { to: '/passwords', icon: KeyRound, label: 'Passwords', guideKey: 'passwords' },
   { to: '/generator', icon: Shuffle, label: 'Generator', guideKey: null },
   { to: '/card', icon: CreditCard, label: 'Card', guideKey: 'card' },
-  { to: '/nfc', icon: Cpu, label: 'NFC Reader', guideKey: 'nfc' },
+  { to: '/invites', icon: Ticket, label: 'Invites', guideKey: null },
   { to: '/settings', icon: Settings, label: 'Settings', guideKey: null },
   { to: '/about', icon: Info, label: 'About', guideKey: null },
 ];
@@ -129,18 +130,26 @@ export const Sidebar = ({
       </div>
 
       <div className="px-2 py-2 border-b border-well shrink-0">
-        <div
-          role="status"
-          aria-live="polite"
-          aria-label={`NFC reader ${nfcHint.toLowerCase()}`}
-          className="w-full flex items-center gap-3 px-3 py-3.5 rounded-xl text-[16px] font-medium
-                     border border-transparent select-none"
-          title={`NFC ${nfcHint}`}
+        <NavLink
+          to="/nfc"
+          aria-label={`NFC reader — ${nfcHint}`}
+          title={`NFC reader — ${nfcHint}. Open NFC reader page`}
+          data-guide-item="sidebar-nfc"
+          className={({ isActive }) =>
+            `w-full flex items-center gap-3 px-3 py-3.5 rounded-xl text-[16px] font-medium
+             select-none active:scale-[0.97] transition-all duration-100
+             ${
+               isActive
+                 ? 'bg-accent-soft text-accent border border-accent-edge'
+                 : 'text-mid hover:text-hi hover:bg-input border border-transparent'
+             }
+             ${highlightNfcNav ? 'guide-click-target' : ''}`
+          }
         >
           <Cpu className={`w-[17px] h-[17px] shrink-0 ${nfcIconCls}`} />
-          <span className="flex-1 text-left text-mid">NFC</span>
+          <span className="flex-1 text-left">NFC</span>
           <span className={`text-[11px] ${nfcHintCls}`}>{nfcHint}</span>
-        </div>
+        </NavLink>
       </div>
 
       <div className="px-2 py-2 border-b border-well shrink-0">
@@ -163,15 +172,12 @@ export const Sidebar = ({
       <nav className="flex flex-col gap-0.5 px-2 pt-3 flex-1">
         {NAV_ITEMS.map(({ to, icon: Icon, label, guideKey }) => {
           const dataGuideItem =
-            guideKey === 'nfc'
-              ? 'sidebar-nfc'
-              : guideKey === 'card'
-                ? 'sidebar-card'
-                : guideKey === 'passwords'
-                  ? 'sidebar-passwords'
-                  : undefined;
+            guideKey === 'card'
+              ? 'sidebar-card'
+              : guideKey === 'passwords'
+                ? 'sidebar-passwords'
+                : undefined;
           const highlight =
-            (guideKey === 'nfc' && highlightNfcNav) ||
             (guideKey === 'card' && highlightCardNav) ||
             (guideKey === 'passwords' && highlightPasswordsNav);
 

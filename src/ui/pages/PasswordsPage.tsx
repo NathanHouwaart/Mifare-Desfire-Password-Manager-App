@@ -166,7 +166,6 @@ const EntryModal = ({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={e => { if (e.target === e.currentTarget && !saving) onClose(); }}
     >
       <div className="bg-card border border-edge rounded-2xl w-full max-w-md shadow-2xl
                       animate-[fadeSlideUp_0.2s_ease-out]">
@@ -278,7 +277,6 @@ const DeleteDialog = ({
 }) => (
   <div
     className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-    onClick={e => { if (e.target === e.currentTarget) onClose(); }}
   >
     <div className="bg-card border border-edge rounded-2xl w-full max-w-sm shadow-2xl p-6
                     flex flex-col gap-4 animate-[fadeSlideUp_0.2s_ease-out]">

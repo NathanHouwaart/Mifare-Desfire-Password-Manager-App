@@ -12,11 +12,11 @@ import { GeneratorPage } from './pages/GeneratorPage';
 import { CardPage } from './pages/CardPage';
 import { NfcReaderPage } from './pages/NfcReaderPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { InvitesPage } from './pages/InvitesPage';
 import { AboutPage } from './pages/AboutPage';
 import { useLiveSync } from './hooks/useLiveSync';
 import './App.css';
 
-const PIN_HASH_KEY = 'app-pin-hash';
 const GUIDE_COMPLETE_KEY = 'app-getting-started-complete';
 const GUIDE_DISMISSED_KEY = 'app-getting-started-dismissed';
 const GUIDE_CARD_READY_KEY = 'app-getting-started-card-ready';
@@ -55,9 +55,6 @@ function App() {
   const [showSyncModal,    setShowSyncModal]     = useState(false);
   const [isTerminalOpen,   setIsTerminalOpen]    = useState(false);
   const [isNfcConnected,   setIsNfcConnected]    = useState(false);
-  const [needsPinSetup,    setNeedsPinSetup]     = useState(
-    () => localStorage.getItem('app-onboarding-complete') === '1' && !localStorage.getItem(PIN_HASH_KEY)
-  );
   const [terminalEnabled,  setTerminalEnabled]   = useState(
     () => (localStorage.getItem('setting-terminal-enabled') ?? 'true') === 'true'
   );
@@ -86,10 +83,8 @@ function App() {
   const [guideSkippedSteps, setGuideSkippedSteps] = useState<GuideStepId[]>(() => loadGuideSkippedSteps());
   const [guideCurrentStep, setGuideCurrentStep] = useState<GuideStepId | null>(null);
 
-  // Track whether the window was blurred so the focus handler only acts on
-  // a real wake-from-background, not the initial focus on startup.
-  const wasBlurred = useRef(false);
   const syncModalRef = useRef<HTMLDivElement | null>(null);
+  const wasBlurred = useRef(false);
 
   useLiveSync(unlocked);
 
@@ -103,8 +98,7 @@ function App() {
     mode?: 'local' | 'synced' | null;
     invite?: SyncInvitePayloadDto | null;
   }) => {
-    const currentMode = (localStorage.getItem('setting-sync-mode') as 'local' | 'synced') ?? 'local';
-    const nextMode = options?.mode ?? (currentMode === 'synced' ? 'synced' : null);
+    const nextMode = options?.mode ?? 'synced';
     setOnboardingInitialMode(nextMode);
     setSyncInvitePrefill(options?.invite ?? null);
     setShowSyncModal(true);
@@ -212,24 +206,34 @@ function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Require PIN on wake ──────────────────────────────────────────────────
-  // When enabled, lock the vault whenever the app window regains focus after
-  // having been blurred (i.e. the user switched away and came back).
+  // When enabled, lock immediately on focus regain after a real blur event.
+  // This avoids locking on every transient blur while still protecting wake.
   useEffect(() => {
     if (!unlocked) return;
-    const onBlur  = () => { wasBlurred.current = true; };
+    const getRequirePinWake = () => (localStorage.getItem('setting-pin-wake') ?? 'false') === 'true';
+
+    const onBlur = () => {
+      wasBlurred.current = true;
+    };
     const onFocus = () => {
       if (!wasBlurred.current) return;
       wasBlurred.current = false;
-      const requirePin = (localStorage.getItem('setting-pin-wake') ?? 'false') === 'true';
-      if (requirePin) setLocking(true);
+      if (!getRequirePinWake()) return;
+      void window.electron['app:lock']().catch(() => {
+        // Best effort lock signal; UI lock still proceeds.
+      });
+      closeSyncModal();
+      setLocking(false);
+      setUnlocked(false);
     };
-    window.addEventListener('blur',  onBlur);
+    window.addEventListener('blur', onBlur);
     window.addEventListener('focus', onFocus);
     return () => {
-      window.removeEventListener('blur',  onBlur);
+      window.removeEventListener('blur', onBlur);
       window.removeEventListener('focus', onFocus);
+      wasBlurred.current = false;
     };
-  }, [unlocked]);
+  }, [closeSyncModal, unlocked]);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -330,6 +334,7 @@ function App() {
     };
     const onVaultSyncApplied = () => {
       void refreshGuideSyncStatus();
+      if (!unlocked) return;
       void refreshGuideCredentialStatus();
     };
     const onGuideCardReady = () => {
@@ -358,7 +363,7 @@ function App() {
       window.removeEventListener('securepass:guide-credential-created', onGuideCredential);
       window.removeEventListener('securepass:guide-credential-revealed', onGuideReveal);
     };
-  }, [refreshGuideCredentialStatus, refreshGuideSyncStatus]);
+  }, [refreshGuideCredentialStatus, refreshGuideSyncStatus, unlocked]);
 
   useEffect(() => {
     if (!guideActive) return;
@@ -510,11 +515,6 @@ function App() {
             window.dispatchEvent(new CustomEvent('securepass:sync-mode-changed', { detail: { mode } }));
             setSyncMode(mode);
             setNeedsOnboarding(false);
-            const hasPin = Boolean(localStorage.getItem(PIN_HASH_KEY));
-            if (!hasPin) {
-              localStorage.removeItem('app-pin-setup-intro-seen');
-            }
-            setNeedsPinSetup(!hasPin);
             setOnboardingInitialMode(null);
             setSyncInvitePrefill(null);
           }}
@@ -529,10 +529,19 @@ function App() {
       {/* Lock screen — shown when vault is locked */}
       {!unlocked && (
         <LockScreen
-          mode={needsPinSetup ? 'setup' : 'auto'}
+          mode="auto"
           onUnlock={() => {
-            setNeedsPinSetup(false);
             setUnlocked(true);
+          }}
+          onBackToAccountSetup={() => {
+            localStorage.removeItem('app-onboarding-complete');
+            localStorage.removeItem('app-pin-setup-intro-seen');
+            const nextMode: 'local' | 'synced' =
+              (localStorage.getItem('setting-sync-mode') ?? 'local') === 'synced' ? 'synced' : 'local';
+            setSyncMode(nextMode);
+            setOnboardingInitialMode(nextMode);
+            setSyncInvitePrefill(null);
+            setNeedsOnboarding(true);
           }}
         />
       )}
@@ -592,6 +601,9 @@ function App() {
                   onToggleTerminalEnabled={toggleTerminalEnabled}
                 />
               </div>
+              <div className={path === '/invites' ? 'block' : 'hidden'}>
+                <InvitesPage />
+              </div>
               <div className={path === '/about' ? 'block' : 'hidden'}>
                 <AboutPage />
               </div>
@@ -647,7 +659,6 @@ function App() {
         <div
           ref={syncModalRef}
           className="fixed inset-0 z-40 flex items-center justify-center px-4 bg-black/60 backdrop-blur-sm"
-          onClick={(e) => { if (e.target === e.currentTarget) closeSyncModal(); }}
         >
           <div className="w-full max-w-[560px] [animation:fadeSlideUp_0.2s_ease-out_both]">
             <OnboardingScreen
@@ -669,7 +680,13 @@ function App() {
       {/* Lock transition overlay — fixed, on top of everything */}
       {locking && (
         <LockTransition
-          onLock={() => setUnlocked(false)}
+          onLock={() => {
+            void window.electron['app:lock']().catch(() => {
+              // Best effort lock signal; UI lock still proceeds.
+            });
+            closeSyncModal();
+            setUnlocked(false);
+          }}
           onDone={() => setLocking(false)}
         />
       )}

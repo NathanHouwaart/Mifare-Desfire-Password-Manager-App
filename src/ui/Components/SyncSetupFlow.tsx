@@ -1,36 +1,31 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
 import {
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
-  Cloud,
   CloudOff,
-  Laptop,
   Link2,
   Loader2,
   LogIn,
   LogOut,
   RefreshCw,
+  Server,
   UserPlus,
   UserRound,
   X,
 } from 'lucide-react';
 import Button from './UI/Button';
+import { SetupBrandShield } from './SetupBrandShield';
 
 type SetupRoute = 'invite' | 'manual';
-type SetupStep = 'entry' | 'server' | 'username' | 'auth' | 'device' | 'done';
-type AccountMode = 'register' | 'login';
+type SetupStep = 'entry' | 'invite' | 'server' | 'username' | 'auth' | 'security' | 'device' | 'done';
+type AccountMode = 'register' | 'login' | 'bootstrap';
 type AsyncCheckState = 'idle' | 'running' | 'success' | 'error';
+type PasswordRuleState = 'ok' | 'warn' | 'neutral';
 
-type DeviceSummary = {
-  key: string;
-  name: string;
-  lastSeenAt: string;
-  active: boolean;
-  isCurrent: boolean;
-  sessions: number;
-};
+const PASSWORD_MIN_LENGTH = 10;
+const PASSWORD_MAX_LENGTH = 256;
 
 interface SyncSetupFlowProps {
   initialSyncConfig?: SyncInvitePayloadDto | null;
@@ -38,6 +33,7 @@ interface SyncSetupFlowProps {
   onCancel?: () => void;
   onComplete: () => void;
   asModal?: boolean;
+  resumeConfiguredState?: boolean;
 }
 
 function normalizeServerUrl(raw: string): string | null {
@@ -75,9 +71,11 @@ function parseInviteInput(raw: string): SyncInvitePayloadDto | null {
     if (!baseUrl) return null;
 
     const username = parsed.searchParams.get('username')?.trim();
+    const inviteToken = parsed.searchParams.get('token')?.trim();
     return {
       baseUrl,
       username: username && username.length > 0 ? username : undefined,
+      inviteToken: inviteToken && inviteToken.length > 0 ? inviteToken : undefined,
     };
   } catch {
     return null;
@@ -92,6 +90,12 @@ function toFriendlySyncError(error: unknown): string {
     return 'That username already exists. Use Sign in instead.';
   }
   if (text.includes('invalid credentials')) return 'Sign in failed. Check username and password.';
+  if (text.includes('invite token is required')) return 'This server is invite-only. Enter your invite token.';
+  if (text.includes('invalid invite token')) return 'Invite token is invalid.';
+  if (text.includes('invite token has expired')) return 'Invite token expired. Ask for a new invite.';
+  if (text.includes('invite token has already been used')) return 'This invite token has already been used.';
+  if (text.includes('invalid bootstrap token')) return 'Bootstrap token is incorrect.';
+  if (text.includes('bootstrap already completed')) return 'Server already has an owner. Use invite registration or sign in.';
   if (text.includes('mfa code required') || text.includes('mfa_required')) {
     return 'This account uses authenticator codes. Enter the 6-digit code and try again.';
   }
@@ -111,12 +115,16 @@ function getStepLabel(step: SetupStep): string {
   switch (step) {
     case 'entry':
       return 'Method';
+    case 'invite':
+      return 'Invite';
     case 'server':
       return 'Server';
     case 'username':
       return 'Username';
     case 'auth':
       return 'Account';
+    case 'security':
+      return 'Security';
     case 'device':
       return 'Device';
     case 'done':
@@ -130,12 +138,70 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function InlineCheckStatus({
+  state,
+  runningText,
+  successText,
+  errorText,
+}: {
+  state: AsyncCheckState;
+  runningText: string;
+  successText: string;
+  errorText: string;
+}) {
+  if (state === 'idle') return null;
+
+  const running = state === 'running';
+  const success = state === 'success';
+
+  return (
+    <div className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-3 ${
+      running
+        ? 'border-accent-edge bg-accent-soft'
+        : success
+          ? 'border-ok-edge bg-ok-soft'
+          : 'border-err-edge bg-err-soft'
+    }`}>
+      {running ? (
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
+      ) : (
+        <CheckCircle2 className={`h-4 w-4 shrink-0 ${success ? 'text-ok' : 'text-err'}`} />
+      )}
+      <span className={`text-[13px] ${running ? 'text-lo' : success ? 'text-ok' : 'text-err'}`}>
+        {running ? runningText : success ? successText : errorText}
+      </span>
+    </div>
+  );
+}
+
+function PasswordRule({ state, text }: { state: PasswordRuleState; text: string }) {
+  const dotClass = state === 'ok'
+    ? 'bg-ok border-ok-edge'
+    : state === 'warn'
+      ? 'bg-err border-err-edge'
+      : 'bg-input border-edge';
+
+  const textClass = state === 'ok'
+    ? 'text-ok'
+    : state === 'warn'
+      ? 'text-err'
+      : 'text-dim';
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`h-2.5 w-2.5 shrink-0 rounded-full border ${dotClass}`} />
+      <span className={`text-[12px] ${textClass}`}>{text}</span>
+    </div>
+  );
+}
+
 export function SyncSetupFlow({
   initialSyncConfig = null,
   onBack,
   onCancel,
   onComplete,
   asModal = false,
+  resumeConfiguredState = true,
 }: SyncSetupFlowProps) {
   const [bootstrapping, setBootstrapping] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -153,11 +219,17 @@ export function SyncSetupFlow({
   const [devices, setDevices] = useState<SyncDeviceDto[]>([]);
 
   const [inviteInput, setInviteInput] = useState(
-    initialSyncConfig?.baseUrl ? `securepass://invite?server=${encodeURIComponent(initialSyncConfig.baseUrl)}` : ''
+    initialSyncConfig?.baseUrl
+      ? `securepass://invite?server=${encodeURIComponent(initialSyncConfig.baseUrl)}${
+        initialSyncConfig.inviteToken ? `&token=${encodeURIComponent(initialSyncConfig.inviteToken)}` : ''
+      }`
+      : ''
   );
   const [serverInput, setServerInput] = useState(initialSyncConfig?.baseUrl ?? '');
   const [serverValidation, setServerValidation] = useState<SyncServerValidationDto | null>(null);
   const [username, setUsername] = useState(initialSyncConfig?.username ?? '');
+  const [inviteTokenInput, setInviteTokenInput] = useState(initialSyncConfig?.inviteToken ?? '');
+  const [bootstrapToken, setBootstrapToken] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [mfaCode, setMfaCode] = useState('');
@@ -170,47 +242,11 @@ export function SyncSetupFlow({
 
   const stepOrder = useMemo<SetupStep[]>(() => {
     const order: SetupStep[] = ['entry'];
+    if (route === 'invite') order.push('invite');
     if (route === 'manual') order.push('server');
-    order.push('username', 'auth', 'device');
+    order.push('username', 'auth', 'security', 'device');
     return order;
   }, [route]);
-
-  const deviceSummaries = useMemo<DeviceSummary[]>(() => {
-    const groups = new Map<string, DeviceSummary>();
-
-    for (const device of devices) {
-      const key = device.name.trim().toLowerCase();
-      const existing = groups.get(key);
-      if (!existing) {
-        groups.set(key, {
-          key,
-          name: device.name,
-          lastSeenAt: device.lastSeenAt,
-          active: device.active,
-          isCurrent: device.isCurrent,
-          sessions: 1,
-        });
-        continue;
-      }
-
-      const existingSeen = new Date(existing.lastSeenAt).getTime();
-      const currentSeen = new Date(device.lastSeenAt).getTime();
-      if (Number.isFinite(currentSeen) && currentSeen > existingSeen) {
-        existing.lastSeenAt = device.lastSeenAt;
-        existing.name = device.name;
-      }
-
-      existing.active = existing.active || device.active;
-      existing.isCurrent = existing.isCurrent || device.isCurrent;
-      existing.sessions += 1;
-    }
-
-    return Array.from(groups.values()).sort((a, b) => {
-      if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-      if (a.active !== b.active) return a.active ? -1 : 1;
-      return new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime();
-    });
-  }, [devices]);
 
   const stepIdx = step === 'done'
     ? stepOrder.length - 1
@@ -219,6 +255,16 @@ export function SyncSetupFlow({
   const navRowClass = 'flex flex-col sm:flex-row gap-2';
   const navButtonClass = 'w-full min-w-0';
   const inputClass = `w-full bg-input border border-edge text-hi text-[14px] rounded-xl px-3.5 py-2.5 outline-none focus:border-accent-edge transition-colors placeholder:text-dim`;
+  const creatingAccount = accountMode === 'register' || accountMode === 'bootstrap';
+  const passwordLengthValid = password.length >= PASSWORD_MIN_LENGTH && password.length <= PASSWORD_MAX_LENGTH;
+  const confirmPasswordPresent = confirmPassword.length > 0;
+  const passwordsMatch = password === confirmPassword;
+  const passwordCreationValid = passwordLengthValid && confirmPasswordPresent && passwordsMatch;
+  const canSubmitAuth = accountMode === 'login'
+    ? password.trim().length > 0
+    : passwordCreationValid && (
+      accountMode === 'register' ? inviteTokenInput.trim().length > 0 : bootstrapToken.trim().length > 0
+    );
 
   const refreshStatus = async (): Promise<SyncStatusDto | null> => {
     try {
@@ -285,7 +331,11 @@ export function SyncSetupFlow({
         }
 
         if (status?.configured) {
-          setStep('auth');
+          if (resumeConfiguredState) {
+            setStep('auth');
+          } else {
+            setStep(initialSyncConfig?.baseUrl ? 'invite' : 'entry');
+          }
         }
       } finally {
         if (!cancelled) setBootstrapping(false);
@@ -297,7 +347,7 @@ export function SyncSetupFlow({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [resumeConfiguredState]);
 
   useEffect(() => {
     const url = mfaSetup?.otpauthUrl;
@@ -321,6 +371,12 @@ export function SyncSetupFlow({
     const resolveAuthMode = async () => {
       if (step !== 'auth') return;
       if (!syncStatus?.configured || syncStatus.loggedIn) return;
+      if (serverValidation && !serverValidation.hasUsers) {
+        if (cancelled) return;
+        setUsernameExistsOnServer(false);
+        setAccountMode('bootstrap');
+        return;
+      }
 
       try {
         const lookup = await window.electron['sync:checkUsername']();
@@ -337,7 +393,7 @@ export function SyncSetupFlow({
     return () => {
       cancelled = true;
     };
-  }, [step, syncStatus]);
+  }, [step, syncStatus, serverValidation]);
 
   const handleValidateServer = async (baseUrl: string) => {
     const validation = await window.electron['sync:validateServer']({ baseUrl });
@@ -367,6 +423,7 @@ export function SyncSetupFlow({
       await wait(550);
       await handleValidateServer(invite.baseUrl);
       if (invite.username) setUsername(invite.username);
+      setInviteTokenInput(invite.inviteToken ?? '');
       setServerCheckState('success');
       await wait(700);
       setStep('username');
@@ -430,11 +487,24 @@ export function SyncSetupFlow({
 
       setAccountCheckState('running');
       await wait(550);
-      const lookup = await window.electron['sync:checkUsername']();
-      setUsernameExistsOnServer(lookup.exists);
-      setAccountMode(lookup.exists ? 'login' : 'register');
+      const requiresBootstrap = Boolean(serverValidation && !serverValidation.hasUsers);
+      let usernameExists: boolean | null = null;
+      let nextAccountMode: AccountMode = 'login';
+
+      if (requiresBootstrap) {
+        usernameExists = false;
+        nextAccountMode = 'bootstrap';
+      } else {
+        const lookup = await window.electron['sync:checkUsername']();
+        usernameExists = lookup.exists;
+        nextAccountMode = lookup.exists ? 'login' : 'register';
+      }
+
+      setUsernameExistsOnServer(usernameExists);
+      setAccountMode(nextAccountMode);
       setPassword('');
       setConfirmPassword('');
+      setBootstrapToken('');
       setMfaCode('');
       setMfaSetup(null);
       setAccountCheckState('success');
@@ -442,9 +512,11 @@ export function SyncSetupFlow({
       setStep('auth');
       setMessage({
         type: 'ok',
-        text: lookup.exists
-          ? 'Username exists. Continue with Sign in.'
-          : 'Username is new. Continue with Create account.',
+        text: requiresBootstrap
+          ? 'Fresh server detected. Complete owner bootstrap.'
+          : usernameExists
+            ? 'Username exists. Continue with Sign in.'
+            : 'Username is new. Continue with Create account.',
       });
 
       await refreshStatus();
@@ -461,17 +533,33 @@ export function SyncSetupFlow({
       setMessage({ type: 'err', text: 'Password is required.' });
       return;
     }
-    if (accountMode === 'register' && password !== confirmPassword) {
+
+    if (creatingAccount && !passwordLengthValid) {
+      setMessage({ type: 'err', text: `Password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters.` });
+      return;
+    }
+    if (creatingAccount && password !== confirmPassword) {
       setMessage({ type: 'err', text: 'Passwords do not match.' });
+      return;
+    }
+    if (accountMode === 'register' && !inviteTokenInput.trim()) {
+      setMessage({ type: 'err', text: 'Invite token is required for account creation.' });
+      return;
+    }
+    if (accountMode === 'bootstrap' && !bootstrapToken.trim()) {
+      setMessage({ type: 'err', text: 'Bootstrap token is required to create the owner account.' });
       return;
     }
 
     setBusy(true);
     setMessage(null);
     try {
-      if (accountMode === 'register') {
-        await window.electron['sync:register']({ password });
-        setMessage({ type: 'ok', text: 'Account created. Next: set up 2FA (highly recommended).' });
+      if (accountMode === 'bootstrap') {
+        await window.electron['sync:bootstrap']({ password, bootstrapToken: bootstrapToken.trim() });
+        setMessage({ type: 'ok', text: 'Owner account bootstrapped. Next: review account security.' });
+      } else if (accountMode === 'register') {
+        await window.electron['sync:register']({ password, inviteToken: inviteTokenInput.trim() });
+        setMessage({ type: 'ok', text: 'Account created. Next: review account security.' });
       } else {
         await window.electron['sync:login']({ password, mfaCode: mfaCode.trim() || undefined });
         setMessage({ type: 'ok', text: 'Signed in successfully.' });
@@ -479,11 +567,12 @@ export function SyncSetupFlow({
 
       setPassword('');
       setConfirmPassword('');
+      setBootstrapToken('');
       setMfaCode('');
       setOpenedWhileLoggedIn(false);
       setMfaSetup(null);
       await refreshAll();
-      setStep('device');
+      setStep('security');
       window.dispatchEvent(new Event('securepass:vault-sync-applied'));
     } catch (error) {
       setMessage({ type: 'err', text: toFriendlySyncError(error) });
@@ -546,6 +635,16 @@ export function SyncSetupFlow({
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleSecurityContinue = async () => {
+    if (!syncStatus?.loggedIn) {
+      setMessage({ type: 'err', text: 'Sign in first.' });
+      return;
+    }
+    await refreshMfa(true);
+    setStep('device');
+    setMessage(null);
   };
 
   const handleDeviceContinue = async () => {
@@ -634,9 +733,11 @@ export function SyncSetupFlow({
       setOpenedWhileLoggedIn(false);
       setPassword('');
       setConfirmPassword('');
+      setBootstrapToken('');
       setMfaCode('');
       setMfaSetup(null);
       setUsernameExistsOnServer(null);
+      setInviteTokenInput(initialSyncConfig?.inviteToken ?? '');
       setDevices([]);
       await refreshStatus();
       window.dispatchEvent(new Event('securepass:vault-sync-applied'));
@@ -665,12 +766,6 @@ export function SyncSetupFlow({
   };
 
   const showProgressTracker = !bootstrapping && !openedWhileLoggedIn && step !== 'done';
-  const showServerCheckOverlay =
-    (step === 'entry' || step === 'server') &&
-    (serverCheckState === 'running' || serverCheckState === 'success');
-  const showAccountCheckOverlay =
-    step === 'username' &&
-    (accountCheckState === 'running' || accountCheckState === 'success');
 
   return (
     <div className={asModal ? 'relative w-full' : 'relative h-screen w-screen overflow-hidden bg-page flex items-center justify-center px-4'}>
@@ -681,15 +776,32 @@ export function SyncSetupFlow({
         </>
       )}
 
-      <div className="relative w-full max-w-[520px] z-10 mx-auto">
-        <div className="absolute -inset-[1px] rounded-3xl bg-gradient-to-br from-indigo-500/25 via-violet-500/20 to-cyan-500/20 blur-[2px]" />
-        <div className="relative rounded-3xl border border-edge bg-card/95 shadow-[0_24px_80px_rgba(0,0,0,0.45)] backdrop-blur-xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 pt-4 pb-4 border-b border-edge/50">
-            <div className="flex items-center gap-2.5">
-              <div className="h-8 w-8 rounded-xl bg-accent-soft border border-accent-edge flex items-center justify-center">
-                <Cloud className="w-4 h-4 text-accent" />
+      <div className="relative w-full max-w-[620px] z-10 mx-auto">
+        <div className="absolute -inset-[1px] rounded-[30px] bg-gradient-to-br from-indigo-500/24 via-violet-500/18 to-cyan-500/16 blur-[2px]" />
+        <div className="relative rounded-[30px] border border-edge bg-card/92 shadow-[0_24px_90px_rgba(0,0,0,0.42)] backdrop-blur-xl overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-edge">
+            <div className="flex min-w-0 items-center gap-3">
+              <SetupBrandShield size="sm" />
+              <div className="min-w-0">
+                <p className="truncate text-[16px] font-semibold leading-tight text-hi">SecurePass Sync Setup</p>
+                <p className="truncate text-[14px] text-lo">
+                  {bootstrapping
+                    ? 'Loading...'
+                    : step === 'entry'
+                      ? 'Connect to server'
+                      : step === 'server'
+                        ? 'Server address'
+                        : step === 'username'
+                          ? 'Your username'
+                          : step === 'auth'
+                            ? 'Sign in or create account'
+                            : step === 'security'
+                              ? 'Account security'
+                              : step === 'device'
+                                ? 'This device'
+                                : 'Connected'}
+                </p>
               </div>
-              <span className="text-[11px] font-bold text-mid tracking-widest uppercase">Sync Setup</span>
             </div>
             <div className="flex items-center gap-2">
               {!openedWhileLoggedIn && (
@@ -745,80 +857,101 @@ export function SyncSetupFlow({
             </div>
           ) : (
           <div key={`${step}-${route}-${accountMode}`} className="relative px-5 pt-5 pb-6 [animation:wizardSlideHorizontal_0.28s_cubic-bezier(0.22,1,0.36,1)_both]">
-            {(showServerCheckOverlay || showAccountCheckOverlay) && (
-              <div className="sync-check-indicator">
-                <div className="sync-check-pill">
-                  {(showServerCheckOverlay ? serverCheckState : accountCheckState) === 'running' ? (
-                    <Loader2 className="w-4 h-4 text-accent sync-check-pulse" />
-                  ) : (
-                    <CheckCircle2 className="w-4 h-4 text-ok sync-check-flash" />
-                  )}
-                  <span className="text-[12px] font-medium text-hi">
-                    {showServerCheckOverlay ? 'Checking server reachability...' : 'Checking account status...'}
-                  </span>
-                </div>
-                <div className="sync-check-bar">
-                  <span className={(showServerCheckOverlay ? serverCheckState : accountCheckState) === 'running'
-                    ? 'sync-check-bar-fill-running'
-                    : 'sync-check-bar-fill-success'}
-                  />
-                </div>
-              </div>
-            )}
 
             {step === 'entry' && (
               <div className="space-y-4">
-                <div className="flex items-start gap-4">
-                  <div className="h-12 w-12 flex-shrink-0 rounded-2xl bg-accent-soft border border-accent-edge flex items-center justify-center">
-                    <Link2 className="w-6 h-6 text-accent" />
-                  </div>
-                  <div>
-                    <h2 className="text-[18px] font-semibold text-hi">Choose setup method</h2>
-                    <p className="mt-1 text-[13px] text-lo">Choose one path. Manual setup asks for server details first.</p>
-                  </div>
+                <div className="mb-2">
+                  <h2 className="text-[22px] font-semibold text-hi leading-tight">How do you want to connect?</h2>
+                  <p className="mt-1.5 text-[14px] text-lo">New user or returning — pick what fits you.</p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="flex flex-col gap-3">
                   <button
                     type="button"
-                    onClick={() => setRoute('invite')}
+                    onClick={() => {
+                      setRoute('invite');
+                      setInviteInput('');
+                      setServerCheckState('idle');
+                      setMessage(null);
+                      setStep('invite');
+                    }}
                     disabled={busy}
-                    className={`rounded-2xl border p-4 text-left transition-all duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-edge ${route === 'invite' ? 'border-accent-edge bg-accent-soft' : 'border-edge bg-input hover:border-edge2'}`}
+                    className="group flex items-center gap-5 rounded-2xl border border-edge bg-input px-5 py-5 text-left transition-all duration-150 hover:border-accent-edge hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-edge disabled:opacity-50"
                   >
-                    <p className="text-[14px] font-semibold text-hi">Use invite link</p>
+                    <div className="h-14 w-14 shrink-0 rounded-2xl bg-card border border-edge flex items-center justify-center group-hover:border-accent-edge group-hover:bg-accent-soft transition-all duration-150">
+                      <Link2 className="w-7 h-7 text-mid group-hover:text-accent transition-colors" />
+                    </div>
+                    <div>
+                      <p className="text-[19px] font-semibold text-hi leading-tight">I have an invite link</p>
+                      <p className="mt-1 text-[14px] text-lo">Paste a link shared by your server admin.</p>
+                    </div>
                   </button>
+
                   <button
                     type="button"
-                    onClick={() => setRoute('manual')}
+                    onClick={() => {
+                      setRoute('manual');
+                      setServerInput('');
+                      setServerValidation(null);
+                      setServerCheckState('idle');
+                      setMessage(null);
+                      setStep('server');
+                    }}
                     disabled={busy}
-                    className={`rounded-2xl border p-4 text-left transition-all duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-edge ${route === 'manual' ? 'border-accent-edge bg-accent-soft' : 'border-edge bg-input hover:border-edge2'}`}
+                    className="group flex items-center gap-5 rounded-2xl border border-edge bg-input px-5 py-5 text-left transition-all duration-150 hover:border-accent-edge hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-edge disabled:opacity-50"
                   >
-                    <p className="text-[14px] font-semibold text-hi">Manual setup</p>
+                    <div className="h-14 w-14 shrink-0 rounded-2xl bg-card border border-edge flex items-center justify-center group-hover:border-accent-edge group-hover:bg-accent-soft transition-all duration-150">
+                      <Server className="w-7 h-7 text-mid group-hover:text-accent transition-colors" />
+                    </div>
+                    <div>
+                      <p className="text-[19px] font-semibold text-hi leading-tight">Connect to server</p>
+                      <p className="mt-1 text-[14px] text-lo">Sign in or create an account on a server you know.</p>
+                    </div>
                   </button>
                 </div>
 
-                {route === 'invite' && (
-                  <>
-                    <input type="text" value={inviteInput} onChange={(event) => setInviteInput(event.target.value)} placeholder="securepass://invite?server=..." className={inputClass} />
-                    {serverCheckState !== 'idle' && (
-                      <div className="rounded-xl border border-edge bg-input p-3 space-y-2">
-                        <p className="text-[12px] font-medium text-hi">Checking server...</p>
-                        <div className="flex items-center gap-2 text-[12px] text-lo">
-                          {serverCheckState === 'running' ? (
-                            <Loader2 className="w-4 h-4 text-accent [animation:spin_1.8s_linear_infinite]" />
-                          ) : (
-                            <CheckCircle2 className={`w-4 h-4 ${serverCheckState === 'success' ? 'text-ok [animation:checkPulse_1.4s_ease-in-out_infinite]' : 'text-err'}`} />
-                          )}
-                          <span>Validate server address and sync API</span>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
                 <div className={navRowClass}>
                   <Button
                     variant="secondary"
                     onClick={onBack}
+                    className={navButtonClass}
+                    aria-label="Previous"
+                    title="Previous"
+                  >
+                    Previous
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {step === 'invite' && (
+              <div className="space-y-4">
+                <h2 className="text-[18px] font-semibold text-hi">Paste your invite link</h2>
+                <InlineCheckStatus
+                  state={serverCheckState}
+                  runningText="Checking server reachability..."
+                  successText="Server verified"
+                  errorText="Could not reach server"
+                />
+                <input
+                  type="text"
+                  value={inviteInput}
+                  onChange={(event) => {
+                    setInviteInput(event.target.value);
+                    setServerCheckState('idle');
+                  }}
+                  placeholder="securepass://invite?server=...&token=..."
+                  className={inputClass}
+                  autoFocus
+                />
+                <div className={navRowClass}>
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setServerCheckState('idle');
+                      setMessage(null);
+                      setStep('entry');
+                    }}
                     className={navButtonClass}
                     aria-label="Previous"
                     title="Previous"
@@ -832,10 +965,10 @@ export function SyncSetupFlow({
                     leftIcon={busy ? <Loader2 className="w-4 h-4 [animation:spin_1.8s_linear_infinite]" /> : undefined}
                     rightIcon={<ArrowRight className="w-4 h-4" />}
                     className={navButtonClass}
-                    aria-label={route === 'invite' ? 'Check invite and continue' : 'Continue'}
-                    title={route === 'invite' ? 'Check invite and continue' : 'Continue'}
+                    aria-label="Check invite and continue"
+                    title="Check invite and continue"
                   >
-                    {route === 'invite' ? 'Check invite & next' : 'Next'}
+                    Next
                   </Button>
                 </div>
               </div>
@@ -844,20 +977,22 @@ export function SyncSetupFlow({
             {step === 'server' && (
               <div className="space-y-4">
                 <h2 className="text-[18px] font-semibold text-hi">Enter server address</h2>
-                <input type="text" value={serverInput} onChange={(event) => setServerInput(event.target.value)} placeholder="http://192.168.10.2:8787" className={inputClass} />
-                {serverCheckState !== 'idle' && (
-                  <div className="rounded-xl border border-edge bg-input p-3 space-y-2">
-                    <p className="text-[12px] font-medium text-hi">Server verification</p>
-                    <div className="flex items-center gap-2 text-[12px] text-lo">
-                      {serverCheckState === 'running' ? (
-                        <Loader2 className="w-4 h-4 text-accent [animation:spin_1.8s_linear_infinite]" />
-                      ) : (
-                        <CheckCircle2 className={`w-4 h-4 ${serverCheckState === 'success' ? 'text-ok [animation:checkPulse_1.4s_ease-in-out_infinite]' : 'text-err'}`} />
-                      )}
-                      <span>Reach server and confirm sync endpoints</span>
-                    </div>
-                  </div>
-                )}
+                <InlineCheckStatus
+                  state={serverCheckState}
+                  runningText="Connecting to server..."
+                  successText="Server verified"
+                  errorText="Could not reach server"
+                />
+                <input
+                  type="text"
+                  value={serverInput}
+                  onChange={(event) => {
+                    setServerInput(event.target.value);
+                    setServerCheckState('idle');
+                  }}
+                  placeholder="http://192.168.10.2:8787"
+                  className={inputClass}
+                />
                 <div className={navRowClass}>
                   <Button
                     variant="secondary"
@@ -892,35 +1027,35 @@ export function SyncSetupFlow({
               <div className="space-y-4">
                 <h2 className="text-[18px] font-semibold text-hi">Enter username</h2>
                 <p className="text-[12px] text-lo">Server: <span className="text-mid">{serverValidation?.baseUrl ?? serverInput}</span></p>
+                <InlineCheckStatus
+                  state={accountCheckState}
+                  runningText="Checking username..."
+                  successText={
+                    accountMode === 'bootstrap'
+                      ? 'Fresh server detected - owner bootstrap required'
+                      : usernameExistsOnServer === true
+                        ? `"${username}" found - will sign in`
+                        : `"${username}" is new - will create account`
+                  }
+                  errorText="Could not check username right now"
+                />
                 <input
                   type="text"
                   value={username}
                   onChange={(event) => {
                     setUsername(event.target.value);
                     setUsernameExistsOnServer(null);
+                    setAccountCheckState('idle');
                   }}
                   placeholder="dad"
                   className={inputClass}
                 />
-                {accountCheckState !== 'idle' && (
-                  <div className="rounded-xl border border-edge bg-input p-3 space-y-2">
-                    <p className="text-[12px] font-medium text-hi">Checking account...</p>
-                    <div className="flex items-center gap-2 text-[12px] text-lo">
-                      {accountCheckState === 'running' ? (
-                        <Loader2 className="w-4 h-4 text-accent [animation:spin_1.8s_linear_infinite]" />
-                      ) : (
-                        <CheckCircle2 className={`w-4 h-4 ${accountCheckState === 'success' ? 'text-ok [animation:checkPulse_1.4s_ease-in-out_infinite]' : 'text-err'}`} />
-                      )}
-                      <span>Resolve whether this username should sign in or register</span>
-                    </div>
-                  </div>
-                )}
                 <div className={navRowClass}>
                   <Button
                     variant="secondary"
                     onClick={() => {
                       setAccountCheckState('idle');
-                      setStep(route === 'manual' ? 'server' : 'entry');
+                      setStep(route === 'manual' ? 'server' : 'invite');
                     }}
                     disabled={busy}
                     className={navButtonClass}
@@ -948,15 +1083,20 @@ export function SyncSetupFlow({
             {step === 'auth' && (
               <div className="space-y-4">
                 <h2 className="text-[18px] font-semibold text-hi">
-                  {accountMode === 'register' ? 'Create account' : 'Sign in'}
+                  {accountMode === 'bootstrap'
+                    ? 'Create owner account'
+                    : accountMode === 'register'
+                      ? 'Create account'
+                      : 'Sign in'}
                 </h2>
                 <p className="text-[12px] text-lo">
+                  {accountMode === 'bootstrap' && `Fresh server detected. "${username}" will become the first admin account.`}
                   {usernameExistsOnServer === true && 'This username already exists on the server, so sign-in is required.'}
-                  {usernameExistsOnServer === false && 'This username is new on the server, so account creation is required.'}
+                  {usernameExistsOnServer === false && accountMode !== 'bootstrap' && 'This username is new on the server, so account creation is required.'}
                   {usernameExistsOnServer === null && 'Continue with account authentication.'}
                 </p>
 
-                {accountMode === 'register' && (
+                {(accountMode === 'register' || accountMode === 'bootstrap') && (
                   <div className="space-y-3">
                     <div className="rounded-xl border border-accent-edge bg-accent-soft p-3 text-[12px] text-mid">
                       Create a sign-in password for this username.
@@ -981,6 +1121,45 @@ export function SyncSetupFlow({
                         className={inputClass}
                       />
                     </div>
+                    <div className="space-y-2 rounded-xl border border-edge bg-input p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-dim">Password requirements</p>
+                      <PasswordRule
+                        state={passwordLengthValid ? 'ok' : 'warn'}
+                        text={`Use ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters`}
+                      />
+                      <PasswordRule
+                        state={!confirmPasswordPresent ? 'neutral' : passwordsMatch ? 'ok' : 'warn'}
+                        text={!confirmPasswordPresent
+                          ? 'Repeat password to confirm'
+                          : passwordsMatch
+                            ? 'Passwords match'
+                            : 'Passwords do not match'}
+                      />
+                    </div>
+                    {accountMode === 'bootstrap' && (
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-dim uppercase tracking-wide block">Bootstrap token</label>
+                        <input
+                          type="password"
+                          value={bootstrapToken}
+                          onChange={(event) => setBootstrapToken(event.target.value)}
+                          placeholder="Token from server .env (BOOTSTRAP_TOKEN)"
+                          className={inputClass}
+                        />
+                      </div>
+                    )}
+                    {accountMode === 'register' && (
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] text-dim uppercase tracking-wide block">Invite token</label>
+                        <input
+                          type="text"
+                          value={inviteTokenInput}
+                          onChange={(event) => setInviteTokenInput(event.target.value)}
+                          placeholder="Paste invite token"
+                          className={inputClass}
+                        />
+                      </div>
+                    )}
                     <div className={navRowClass}>
                       <Button
                         variant="secondary"
@@ -998,14 +1177,14 @@ export function SyncSetupFlow({
                       <Button
                         variant="primary"
                         onClick={handleAuthenticate}
-                        disabled={busy}
+                        disabled={busy || !canSubmitAuth}
                         leftIcon={busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
                         rightIcon={<ArrowRight className="w-4 h-4" />}
                         className={navButtonClass}
-                        aria-label="Create account and continue"
-                        title="Create account and continue"
+                        aria-label={accountMode === 'bootstrap' ? 'Bootstrap owner account and continue' : 'Create account and continue'}
+                        title={accountMode === 'bootstrap' ? 'Bootstrap owner account and continue' : 'Create account and continue'}
                       >
-                        Create account & next
+                        {accountMode === 'bootstrap' ? 'Bootstrap owner & next' : 'Create account & next'}
                       </Button>
                     </div>
                   </div>
@@ -1055,7 +1234,7 @@ export function SyncSetupFlow({
                       <Button
                         variant="primary"
                         onClick={handleAuthenticate}
-                        disabled={busy}
+                        disabled={busy || !canSubmitAuth}
                         leftIcon={busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
                         rightIcon={<ArrowRight className="w-4 h-4" />}
                         className={navButtonClass}
@@ -1071,11 +1250,10 @@ export function SyncSetupFlow({
               </div>
             )}
 
-            {step === 'device' && (
+            {step === 'security' && (
               <div className="space-y-4">
-                <h2 className="text-[18px] font-semibold text-hi">Name this device (optional)</h2>
-                <div className="flex items-center gap-2 text-[12px] text-lo"><Laptop className="w-4 h-4" />Shows in linked devices list</div>
-                <input type="text" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="Dad's Laptop" className={inputClass} />
+                <h2 className="text-[18px] font-semibold text-hi">Account security</h2>
+                <p className="text-[12px] text-lo">Set up two-factor authentication before finishing device setup.</p>
                 <div className="rounded-xl border border-edge bg-input p-3 space-y-3">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-[13px] font-semibold text-hi">Authenticator (2FA)</p>
@@ -1097,8 +1275,6 @@ export function SyncSetupFlow({
                       onClick={handleSetupMfa}
                       disabled={busy || !syncStatus?.loggedIn}
                       className="w-full min-w-0"
-                      aria-label="Set up authenticator"
-                      title="Set up authenticator"
                     >
                       Set up authenticator
                     </Button>
@@ -1134,8 +1310,6 @@ export function SyncSetupFlow({
                           onClick={handleEnableMfa}
                           disabled={busy}
                           className="w-full sm:w-auto min-w-0"
-                          aria-label="Enable 2FA"
-                          title="Enable 2FA"
                         >
                           Enable 2FA
                         </Button>
@@ -1161,8 +1335,6 @@ export function SyncSetupFlow({
                           onClick={handleDisableMfa}
                           disabled={busy}
                           className="w-full sm:w-auto min-w-0"
-                          aria-label="Disable 2FA"
-                          title="Disable 2FA"
                         >
                           Disable 2FA
                         </Button>
@@ -1174,6 +1346,41 @@ export function SyncSetupFlow({
                   <Button
                     variant="secondary"
                     onClick={() => setStep('auth')}
+                    disabled={busy}
+                    className={navButtonClass}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={() => { void handleSecurityContinue(); }}
+                    disabled={busy}
+                    rightIcon={<ArrowRight className="w-4 h-4" />}
+                    className={navButtonClass}
+                  >
+                    Continue to device setup
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {step === 'device' && (
+              <div className="space-y-4">
+                <h2 className="text-[18px] font-semibold text-hi">Name this device (optional)</h2>
+                <p className="text-[12px] text-lo">This name appears in your linked device list.</p>
+                <input type="text" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="Dad's Laptop" className={inputClass} />
+                <div className="rounded-xl border border-edge bg-input px-3 py-2.5 flex items-center justify-between">
+                  <p className="text-[12px] text-mid">Two-factor authentication</p>
+                  <span className={`text-[11px] px-2 py-0.5 rounded-lg border ${
+                    mfaStatus?.mfaEnabled ? 'text-ok border-ok-edge bg-ok-soft' : 'text-warn border-warn-edge bg-warn-soft'
+                  }`}>
+                    {mfaStatus?.mfaEnabled ? 'Enabled' : 'Not set up'}
+                  </span>
+                </div>
+                <div className={navRowClass}>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setStep('security')}
                     disabled={busy}
                     className={navButtonClass}
                     aria-label="Previous"
@@ -1367,7 +1574,9 @@ export function SyncSetupFlow({
 
                 <div className="rounded-2xl border border-edge bg-input p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <p className="text-[13px] font-semibold text-hi">Linked devices</p>
+                    <p className="text-[13px] font-semibold text-hi">
+                      Linked devices{devicesBusy ? '' : ` (${devices.length})`}
+                    </p>
                     <Button
                       variant="compact"
                       onClick={() => { void refreshDevices(Boolean(syncStatus?.loggedIn)); }}
@@ -1381,11 +1590,11 @@ export function SyncSetupFlow({
                   </div>
 
                   {devicesBusy && <p className="text-[12px] text-lo">Loading devices...</p>}
-                  {!devicesBusy && deviceSummaries.length === 0 && <p className="text-[12px] text-lo">No devices found.</p>}
-                  {!devicesBusy && deviceSummaries.length > 0 && (
+                  {!devicesBusy && devices.length === 0 && <p className="text-[12px] text-lo">No devices found.</p>}
+                  {!devicesBusy && devices.length > 0 && (
                     <div className="max-h-56 overflow-y-auto pr-1 flex flex-col gap-2">
-                      {deviceSummaries.map((device) => (
-                        <div key={device.key} className="rounded-xl border border-edge bg-card/60 p-2.5">
+                      {devices.map((device) => (
+                        <div key={device.id} className="rounded-xl border border-edge bg-card/60 p-2.5">
                           <div className="flex items-center justify-between gap-2">
                             <p className="text-[12px] font-medium text-hi truncate">{device.name}</p>
                             <span className={`text-[10px] px-2 py-0.5 rounded-full border ${device.active ? 'text-ok border-ok-edge bg-ok-soft' : 'text-lo border-edge bg-input'}`}>
@@ -1394,8 +1603,7 @@ export function SyncSetupFlow({
                           </div>
                           <p className="text-[11px] text-lo mt-1">
                             Last seen: {new Date(device.lastSeenAt).toLocaleString()}
-                            {device.isCurrent ? ' · This device' : ''}
-                            {device.sessions > 1 ? ` · ${device.sessions} sessions` : ''}
+                            {device.isCurrent ? ' - This device' : ''}
                           </p>
                         </div>
                       ))}
@@ -1441,3 +1649,4 @@ export function SyncSetupFlow({
     </div>
   );
 }
+
