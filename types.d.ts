@@ -101,6 +101,7 @@ type ExtensionOpenFolderResultDto = {
 type SyncInvitePayloadDto = {
   baseUrl: string;
   username?: string;
+  inviteToken?: string;
 };
 
 type SyncConfigDto = {
@@ -124,6 +125,39 @@ type SyncBootstrapDto = {
 
 type SyncRegisterDto = {
   password: string;
+  inviteToken?: string;
+};
+
+type SyncAuthMeDto = {
+  userId: string;
+  username: string;
+  isAdmin: boolean;
+  inviteCreationPolicy: 'admin' | 'any';
+};
+
+type SyncCreateInviteDto = {
+  note?: string;
+  expiresIn?: string;
+};
+
+type SyncInviteTokenDto = {
+  id: string;
+  token: string;
+  inviteUrl: string;
+  serverUrl: string;
+  note: string | null;
+  expiresAt: string;
+  createdAt: string;
+};
+
+type SyncInviteListItemDto = {
+  id: string;
+  note: string | null;
+  expiresAt: string;
+  expired: boolean;
+  used: boolean;
+  usedAt: string | null;
+  createdAt: string;
 };
 
 type SyncLoginDto = {
@@ -187,6 +221,13 @@ type SyncRunResultDto = {
   pull: SyncPullResultDto;
 };
 
+type SyncAppliedEventDto = {
+  reason: 'startup' | 'interval' | 'sse' | 'queued';
+  at: number;
+  push: SyncPushResultDto;
+  pull: SyncPullResultDto;
+};
+
 type SyncVaultKeyEnvelopeDto = {
   keyVersion: number;
   kdf: 'scrypt-v1';
@@ -232,6 +273,54 @@ type SyncUpdateDeviceDto = {
   name: string;
 };
 
+type PinSetResultDto = {
+  ok: true;
+};
+
+type PinVerifyResultDto =
+  | { ok: true }
+  | { ok: false; reason: 'INVALID'; attemptsRemaining: number }
+  | { ok: false; reason: 'LOCKED'; retryAfterMs: number };
+
+type PinChangeResultDto =
+  | { ok: true }
+  | { ok: false; reason: 'NO_PIN' }
+  | { ok: false; reason: 'INVALID_CURRENT'; attemptsRemaining: number }
+  | { ok: false; reason: 'LOCKED'; retryAfterMs: number };
+
+type PinRecoveryStartDto = {
+  password?: string;
+  mfaCode?: string;
+};
+
+type PinRecoveryCapabilitiesDto = {
+  accountRecoveryAvailable: boolean;
+  destructiveResetAvailable: boolean;
+};
+
+type PinRecoveryStartResultDto =
+  | { ok: true; token: string; expiresAt: number; syncRequired: boolean }
+  | { ok: false; reason: 'NO_PIN' }
+  | { ok: false; reason: 'NO_SECURE_RECOVERY'; message: string }
+  | { ok: false; reason: 'SYNC_PASSWORD_REQUIRED' }
+  | { ok: false; reason: 'MFA_REQUIRED' }
+  | { ok: false; reason: 'INVALID_MFA_CODE' }
+  | { ok: false; reason: 'SYNC_AUTH_FAILED'; message: string };
+
+type PinRecoveryCompleteDto = {
+  token: string;
+  newPin: string;
+};
+
+type PinRecoveryCompleteResultDto =
+  | { ok: true }
+  | { ok: false; reason: 'INVALID_TOKEN' }
+  | { ok: false; reason: 'EXPIRED_TOKEN' }
+  | { ok: false; reason: 'INVALID_NEW_PIN' };
+
+type PinRecoveryDestructiveResetResultDto =
+  | { ok: true };
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 type RendererEvents = {
@@ -239,6 +328,7 @@ type RendererEvents = {
   'nfc:selfTestProgress': SelfTestResultDto;
   'nfc:connectionChanged': NfcConnectionStateDto;
   'securepass:syncInvite': SyncInvitePayloadDto;
+  'sync:applied': SyncAppliedEventDto;
 };
 
 // 1) canonical single source: define your IPC handlers here
@@ -276,6 +366,18 @@ type IPCHandlers = {
   'card:getAids': () => Promise<string[]>;
   /** Aborts any in-progress card-wait polling loop immediately. */
   'nfc:cancel': () => Promise<void>;
+  /** Marks the app vault as locked in the main process. */
+  'app:lock': () => Promise<{ ok: true }>;
+  /** Relaunches the app process and exits the current instance. */
+  'app:relaunch': () => Promise<{ ok: true }>;
+  'pin:has': () => Promise<boolean>;
+  'pin:set': (pin: string) => Promise<PinSetResultDto>;
+  'pin:verify': (pin: string) => Promise<PinVerifyResultDto>;
+  'pin:change': (currentPin: string, newPin: string) => Promise<PinChangeResultDto>;
+  'pin:recovery:capabilities': () => Promise<PinRecoveryCapabilitiesDto>;
+  'pin:recovery:start': (payload: PinRecoveryStartDto) => Promise<PinRecoveryStartResultDto>;
+  'pin:recovery:destructiveReset': () => Promise<PinRecoveryDestructiveResetResultDto>;
+  'pin:recovery:complete': (payload: PinRecoveryCompleteDto) => Promise<PinRecoveryCompleteResultDto>;
   /** Clears the system clipboard from the main process — no document-focus restriction. */
   'clipboard:clear': () => Promise<void>;
   /** Reads the current system clipboard text from the main process — no document-focus restriction. */
@@ -320,6 +422,14 @@ type IPCHandlers = {
   'sync:bootstrap': (payload: SyncBootstrapDto) => Promise<SyncStatusDto>;
   /** Register a new account on the sync server. */
   'sync:register': (payload: SyncRegisterDto) => Promise<SyncStatusDto>;
+  /** Returns current authenticated account metadata and invite policy. */
+  'sync:getAuthMe': () => Promise<SyncAuthMeDto>;
+  /** Creates a single-use invite token and securepass:// invite URL. */
+  'sync:createInvite': (payload: SyncCreateInviteDto) => Promise<SyncInviteTokenDto>;
+  /** Lists invite tokens created by the current account. */
+  'sync:listInvites': () => Promise<SyncInviteListItemDto[]>;
+  /** Revokes an unused invite token by id. */
+  'sync:revokeInvite': (payload: { id: string }) => Promise<{ ok: true }>;
   /** Login to sync server and store encrypted refresh/access session. */
   'sync:login': (payload: SyncLoginDto) => Promise<SyncStatusDto>;
   /** Returns current MFA enrollment status for the authenticated account. */
@@ -370,6 +480,7 @@ type ExposedElectronAPI = {
   onSelfTestProgress: (callback: (result: SelfTestResultDto) => void) => () => void;
   onNfcConnectionChange: (callback: (state: NfcConnectionStateDto) => void) => () => void;
   onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => () => void;
+  onSyncApplied: (callback: (payload: SyncAppliedEventDto) => void) => () => void;
 };
 
 // 4) augment global Window so you only maintain IPCHandlers

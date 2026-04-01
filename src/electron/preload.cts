@@ -11,6 +11,7 @@ electron.contextBridge.exposeInMainWorld("electron", {
     onSelfTestProgress: (callback: (result: SelfTestResultDto) => void) => ipcOn('nfc:selfTestProgress', callback),
     onNfcConnectionChange: (callback: (state: NfcConnectionStateDto) => void) => ipcOn('nfc:connectionChanged', callback),
     onSyncInvite: (callback: (payload: SyncInvitePayloadDto) => void) => ipcOn('securepass:syncInvite', callback),
+    onSyncApplied: (callback: (payload: SyncAppliedEventDto) => void) => ipcOn('sync:applied', callback),
     saveFile: (filename: string, content: string) => ipcInvoke("saveFile", filename, content),
     getFirmwareVersion: () => ipcInvoke("getFirmwareVersion"),
     runSelfTests: () => ipcInvoke("runSelfTests"),
@@ -36,6 +37,18 @@ electron.contextBridge.exposeInMainWorld("electron", {
 
     // Cancel any in-progress card-wait operation
     'nfc:cancel': () => ipcInvoke('nfc:cancel'),
+    'app:lock': () => ipcInvoke('app:lock'),
+    'app:relaunch': () => ipcInvoke('app:relaunch'),
+
+    // App-lock PIN operations (main-process managed)
+    'pin:has':    () => ipcInvoke('pin:has'),
+    'pin:set':    (pin: string) => ipcInvoke('pin:set', pin),
+    'pin:verify': (pin: string) => ipcInvoke('pin:verify', pin),
+    'pin:change': (currentPin: string, newPin: string) => ipcInvoke('pin:change', currentPin, newPin),
+    'pin:recovery:capabilities': () => ipcInvoke('pin:recovery:capabilities'),
+    'pin:recovery:start': (payload: PinRecoveryStartDto) => ipcInvoke('pin:recovery:start', payload),
+    'pin:recovery:destructiveReset': () => ipcInvoke('pin:recovery:destructiveReset'),
+    'pin:recovery:complete': (payload: PinRecoveryCompleteDto) => ipcInvoke('pin:recovery:complete', payload),
 
     // Clear the system clipboard via the main process (no focus restriction)
     'clipboard:clear': () => ipcInvoke('clipboard:clear'),
@@ -52,6 +65,10 @@ electron.contextBridge.exposeInMainWorld("electron", {
     'sync:consumeInvite': () => ipcInvoke('sync:consumeInvite'),
     'sync:setConfig':   (config: SyncConfigDto) => ipcInvoke('sync:setConfig', config),
     'sync:checkUsername': () => ipcInvoke('sync:checkUsername'),
+    'sync:getAuthMe':   () => ipcInvoke('sync:getAuthMe'),
+    'sync:createInvite': (payload: SyncCreateInviteDto) => ipcInvoke('sync:createInvite', payload),
+    'sync:listInvites': () => ipcInvoke('sync:listInvites'),
+    'sync:revokeInvite': (payload: { id: string }) => ipcInvoke('sync:revokeInvite', payload),
     'sync:clearConfig': () => ipcInvoke('sync:clearConfig'),
     'sync:bootstrap':   (payload: SyncBootstrapDto) => ipcInvoke('sync:bootstrap', payload),
     'sync:register':    (payload: SyncRegisterDto) => ipcInvoke('sync:register', payload),

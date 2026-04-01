@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@source "./**/*.{ts,tsx,js,jsx,html}";
+@source not "../../native/**";
+@source not "../../dist/**";
 
 @layer utilities {
   @keyframes shimmer {
@@ -11,7 +14,7 @@
     100% { transform: scale(1.4);  opacity: 0; }
   }
   @keyframes wizardSlideHorizontal {
-    from { opacity: 0; transform: translateX(14px); }
+    from { opacity: 0; transform: translateX(8px); }
     to   { opacity: 1; transform: translateX(0); }
   }
   @keyframes checkPulse {

@@ -117,14 +117,21 @@ async function withEntryKey<T>(
 
 export function registerVaultHandlers(
   nfcBinding: NfcCppBinding,
-  log: (level: 'info' | 'warn' | 'error', msg: string) => void
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void,
+  deps?: { isVaultUnlocked?: () => boolean }
 ): void {
+  const assertVaultUnlocked = () => {
+    if (deps?.isVaultUnlocked && !deps.isVaultUnlocked()) {
+      throw Object.assign(new Error('Vault is locked. Unlock SecurePass first.'), { code: 'VAULT_LOCKED' });
+    }
+  };
 
   // ── vault:listEntries ───────────────────────────────────────────────────────
   // Metadata-only query — no card tap required.
   ipcMain.handle(
     'vault:listEntries',
     (_ev: IpcMainInvokeEvent, opts?: VaultListOptsDto): EntryListItemDto[] => {
+      assertVaultUnlocked();
       return listEntries({
         offset: opts?.offset,
         limit:  opts?.limit,
@@ -137,6 +144,7 @@ export function registerVaultHandlers(
   ipcMain.handle(
     'vault:getEntry',
     async (_ev: IpcMainInvokeEvent, id: string): Promise<EntryPayloadDto> => {
+      assertVaultUnlocked();
       const row = getEntryRow(id);
       if (!row) {
         throw Object.assign(new Error(`Entry ${id} not found`), { code: 'NOT_FOUND' });
@@ -166,6 +174,7 @@ export function registerVaultHandlers(
   ipcMain.handle(
     'vault:createEntry',
     async (_ev: IpcMainInvokeEvent, params: EntryCreateDto): Promise<EntryListItemDto> => {
+      assertVaultUnlocked();
       const newId = crypto.randomUUID();
       log('info', `vault:createEntry — tap card to encrypt "${params.label}"...`);
       return withEntryKey(nfcBinding, newId, (entryKey): EntryListItemDto => {
@@ -195,6 +204,7 @@ export function registerVaultHandlers(
       id: string,
       params: EntryUpdateDto
     ): Promise<EntryListItemDto> => {
+      assertVaultUnlocked();
       if (!getEntryRow(id)) {
         throw Object.assign(new Error(`Entry ${id} not found`), { code: 'NOT_FOUND' });
       }
@@ -227,6 +237,7 @@ export function registerVaultHandlers(
   ipcMain.handle(
     'vault:deleteEntry',
     (_ev: IpcMainInvokeEvent, id: string): boolean => {
+      assertVaultUnlocked();
       const deleted = deleteEntry(id);
       if (deleted) log('info', `vault:deleteEntry — entry ${id} deleted.`);
       return deleted;
@@ -237,6 +248,7 @@ export function registerVaultHandlers(
   // Dumps all encrypted rows to a JSON file chosen by the user.
   // No card tap needed — the blobs are already encrypted at rest.
   ipcMain.handle('vault:export', async () => {
+    assertVaultUnlocked();
     const win = BrowserWindow.getAllWindows()[0];
     const { canceled, filePath } = await dialog.showSaveDialog(win, {
       title:       'Export Vault Backup',
@@ -276,6 +288,7 @@ export function registerVaultHandlers(
   // Reads a JSON backup, validates it, and bulk-inserts missing entries.
   // Entries whose IDs already exist in the vault are skipped (safe merge).
   ipcMain.handle('vault:import', async () => {
+    assertVaultUnlocked();
     const win = BrowserWindow.getAllWindows()[0];
     const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       title:      'Import Vault Backup',

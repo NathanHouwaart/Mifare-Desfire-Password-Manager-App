@@ -2,16 +2,20 @@
 
 import {
   bootstrapSync,
+  createSyncInvite,
   checkSyncUsernameExists,
   clearSyncConfigAndSession,
   disableSyncMfa,
   enableSyncMfa,
+  getSyncAuthMe,
   getSyncStatus,
   getSyncDevices,
+  listSyncInvites,
   getSyncKeyEnvelope,
   getSyncMfaStatus,
   loginSync,
   registerSync,
+  revokeSyncInvite,
   logoutSync,
   pullSync,
   pushSync,
@@ -107,6 +111,28 @@ export function registerSyncHandlers(
     return { exists };
   });
 
+  ipcMain.handle('sync:getAuthMe', async () => {
+    return getSyncAuthMe();
+  });
+
+  ipcMain.handle('sync:createInvite', async (_ev, payload: SyncCreateInviteDto) => {
+    const invite = await createSyncInvite(payload ?? {});
+    log('info', `sync:createInvite - invite ${invite.id} created`);
+    return invite;
+  });
+
+  ipcMain.handle('sync:listInvites', async () => {
+    const invites = await listSyncInvites();
+    log('info', `sync:listInvites - ${invites.length} invite(s)`);
+    return invites;
+  });
+
+  ipcMain.handle('sync:revokeInvite', async (_ev, payload: { id: string }) => {
+    await revokeSyncInvite(payload.id);
+    log('warn', `sync:revokeInvite - invite ${payload.id} revoked`);
+    return { ok: true as const };
+  });
+
   ipcMain.handle('sync:clearConfig', () => {
     clearUnlockedVaultRootKey();
     const status = clearSyncConfigAndSession();
@@ -132,7 +158,7 @@ export function registerSyncHandlers(
   });
 
   ipcMain.handle('sync:register', async (_ev, payload: SyncRegisterDto) => {
-    const status = await registerSync(payload.password);
+    const status = await registerSync(payload.password, payload.inviteToken);
     log('info', `sync:register - account created for ${status.username}`);
     try {
       const mode = await prepareVaultKeyWithPassword(payload.password);

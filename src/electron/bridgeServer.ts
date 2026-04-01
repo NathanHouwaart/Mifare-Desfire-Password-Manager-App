@@ -81,14 +81,24 @@ interface EntryHint {
  * entry and vice-versa.
  */
 function matchesDomain(entryUrl: string, requestedDomain: string): boolean {
-  const strip = (s: string) => s.replace(/^www\./, '').toLowerCase();
-  try {
-    const entryHost = strip(new URL(entryUrl).hostname);
-    return entryHost === strip(requestedDomain) || entryHost.endsWith('.' + strip(requestedDomain));
-  } catch {
-    // Not a valid URL — fall back to substring match
-    return entryUrl.toLowerCase().includes(strip(requestedDomain));
-  }
+  const normalizeHost = (raw: string): string | null => {
+    const trimmed = raw.trim().toLowerCase();
+    if (!trimmed) return null;
+
+    try {
+      return new URL(trimmed).hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      const withoutScheme = trimmed.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+      const host = withoutScheme.split(/[/?#:]/, 1)[0]?.replace(/^www\./, '').toLowerCase() ?? '';
+      if (!host || !/^[a-z0-9.-]+$/.test(host)) return null;
+      return host;
+    }
+  };
+
+  const entryHost = normalizeHost(entryUrl);
+  const requestedHost = normalizeHost(requestedDomain);
+  if (!entryHost || !requestedHost) return false;
+  return entryHost === requestedHost || entryHost.endsWith('.' + requestedHost);
 }
 
 // ─── Card-gated decryption ────────────────────────────────────────────────────
@@ -111,10 +121,14 @@ function uidToBuffer(uidHex: string): Buffer {
 async function decryptEntryById(
   nfcBinding: NfcCppBinding,
   entryId:    string,
+  requestedDomain: string,
   log:        (level: 'info' | 'warn' | 'error', msg: string) => void
 ): Promise<{ username: string; password: string }> {
   const row = getEntryRow(entryId);
   if (!row) throw Object.assign(new Error(`Entry ${entryId} not found`), { code: 'NOT_FOUND' });
+  if (!matchesDomain(row.url, requestedDomain)) {
+    throw Object.assign(new Error('Selected entry does not match the current site domain'), { code: 'DOMAIN_MISMATCH' });
+  }
 
   log('info', `[bridge] tap card to decrypt "${row.label}"…`);
 
@@ -147,7 +161,8 @@ async function decryptEntryById(
 
 export function startBridgeServer(
   nfcBinding: NfcCppBinding,
-  log: (level: 'info' | 'warn' | 'error', msg: string) => void
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void,
+  deps?: { isVaultUnlocked?: () => boolean }
 ): net.Server {
   cleanupUnixSocket(BRIDGE_ENDPOINT, log);
 
@@ -175,7 +190,7 @@ export function startBridgeServer(
           continue;
         }
 
-        handleRequest(req, nfcBinding, log).then((reply) => {
+        handleRequest(req, nfcBinding, log, deps).then((reply) => {
           if (!socket.destroyed) socket.write(JSON.stringify(reply) + '\n');
         }).catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err);
@@ -218,12 +233,17 @@ export function startBridgeServer(
 async function handleRequest(
   req:        BridgeRequest,
   nfcBinding: NfcCppBinding,
-  log:        (level: 'info' | 'warn' | 'error', msg: string) => void
+  log:        (level: 'info' | 'warn' | 'error', msg: string) => void,
+  deps?: { isVaultUnlocked?: () => boolean }
 ): Promise<Record<string, unknown>> {
   const { id, action } = req;
 
   if (action === 'ping') {
     return { id, pong: true };
+  }
+
+  if (deps?.isVaultUnlocked && !deps.isVaultUnlocked()) {
+    return { id, error: 'Vault is locked. Unlock SecurePass first.' };
   }
 
   if (action === 'list_for_domain') {
@@ -238,7 +258,8 @@ async function handleRequest(
 
   if (action === 'get_credentials') {
     if (!req.entryId) return { id, error: 'Missing entryId' };
-    const creds = await decryptEntryById(nfcBinding, req.entryId, log);
+    if (!req.domain) return { id, error: 'Missing domain' };
+    const creds = await decryptEntryById(nfcBinding, req.entryId, req.domain, log);
     log('info', `[bridge] credentials delivered for entry ${req.entryId}`);
     return { id, ...creds };
   }

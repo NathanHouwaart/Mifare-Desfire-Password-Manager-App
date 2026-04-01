@@ -7,15 +7,23 @@ import { spawn } from 'node:child_process';
 import type { Server } from 'node:net';
 import { isDev } from './utils.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
-import { openVault, closeVault } from './vault.js';
+import { openVault, closeVault, wipeVault } from './vault.js';
 import { registerCardHandlers } from './cardHandlers.js';
 import { registerVaultHandlers } from './vaultHandlers.js';
 import { registerSyncHandlers }  from './syncHandlers.js';
-import { getSyncStatus, runFullSync } from './syncService.js';
+import {
+  clearSyncConfigAndSession,
+  getSyncSessionDeviceId,
+  getSyncStatus,
+  loginSync,
+  openSyncEventsStream,
+  runFullSync,
+} from './syncService.js';
 import { clearUnlockedVaultRootKey, getUnlockedVaultRootKey } from './vaultKeyManager.js';
 import { startBridgeServer }    from './bridgeServer.js';
-import { cancelCardWait }       from './nfcCancel.js';
+import { cancelCardWait } from './nfcCancel.js';
 import { registerNativeHost }   from './nativeHostRegistrar.js';
+import { hasPinConfigured, setPin, verifyPin, changePin, startPinRecovery, completePinRecovery, resetPin } from './pinManager.js';
 import type { NfcCppBinding as NfcCppBindingType } from './bindings.js';
 
 // Add global error handlers to catch crashes
@@ -34,7 +42,11 @@ let bridgeServer: Server | null = null;
 let shutdownInProgress = false;
 const LOCKED_ZOOM_FACTOR = 0.8; // roughly equivalent to pressing Ctrl + '-' twice from 100%
 const ZOOM_SHORTCUT_KEYS = new Set(['+', '=', '-', '_', '0', 'Add', 'Subtract', 'NumpadAdd', 'NumpadSubtract']);
-const AUTO_SYNC_INTERVAL_MS = 2 * 60 * 1000;
+const AUTO_SYNC_FALLBACK_INTERVAL_MS = 15 * 60 * 1000;
+const SYNC_EVENTS_IDLE_WAIT_MS = 10_000;
+const SYNC_EVENTS_RETRY_BASE_MS = 3_000;
+const SYNC_EVENTS_RETRY_MAX_MS = 60_000;
+const SYNC_EVENTS_SYNC_DEBOUNCE_MS = 1_200;
 const APP_PROTOCOL_SCHEME = 'securepass';
 const WM_DEVICECHANGE = 0x0219;
 const DBT_DEVICEARRIVAL = 0x8000;
@@ -43,6 +55,11 @@ const DBT_DEVNODES_CHANGED = 0x0007;
 
 let autoSyncTimer: NodeJS.Timeout | null = null;
 let autoSyncRunning = false;
+let autoSyncRerunRequested = false;
+let syncEventsLoopAbort: AbortController | null = null;
+let syncEventsLoopPromise: Promise<void> | null = null;
+let syncEventDebounceTimer: NodeJS.Timeout | null = null;
+let lastSyncEventCursorSeen = 0;
 let pendingSyncInvite: SyncInvitePayloadDto | null = null;
 let hotplugCheckInFlight = false;
 let pendingReconnectPort: string | null = null;
@@ -58,6 +75,20 @@ if (process.platform === 'win32') {
  * an HMR reload without the underlying serial port ever closing.
  */
 let connectedPort: string | null = null;
+let vaultUnlocked = false;
+
+function isVaultUnlocked(): boolean {
+  return vaultUnlocked;
+}
+
+function setVaultLocked(): void {
+  vaultUnlocked = false;
+  cancelCardWait();
+}
+
+function setVaultUnlocked(): void {
+  vaultUnlocked = true;
+}
 
 function normalizeInviteBaseUrl(raw: string): string | null {
   try {
@@ -99,9 +130,11 @@ function parseSyncInviteUrl(url: string): SyncInvitePayloadDto | null {
     if (!normalizedBaseUrl) return null;
 
     const username = parsed.searchParams.get('username')?.trim();
+    const inviteToken = parsed.searchParams.get('token')?.trim();
     return {
       baseUrl: normalizedBaseUrl,
       username: username && username.length > 0 ? username : undefined,
+      inviteToken: inviteToken && inviteToken.length > 0 ? inviteToken : undefined,
     };
   } catch {
     return null;
@@ -353,8 +386,230 @@ function installWindowsDeviceChangeHook(win: BrowserWindow): void {
   });
 }
 
-async function runBackgroundSync(reason: 'startup' | 'interval'): Promise<void> {
-  if (autoSyncRunning) return;
+type BackgroundSyncReason = 'startup' | 'interval' | 'sse' | 'queued';
+type ParsedSyncStreamEvent = {
+  cursor?: number;
+  sourceDeviceId?: string | null;
+};
+
+function waitWithAbort(signal: AbortSignal, timeoutMs: number): Promise<void> {
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, timeoutMs);
+    const onAbort = () => {
+      cleanup();
+      resolve();
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function emitSyncAppliedToRenderer(result: SyncRunResultDto, reason: BackgroundSyncReason): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('sync:applied', {
+    reason,
+    at: Date.now(),
+    push: result.push,
+    pull: result.pull,
+  } satisfies SyncAppliedEventDto);
+}
+
+function scheduleSyncFromRemoteEvent(): void {
+  if (syncEventDebounceTimer) {
+    clearTimeout(syncEventDebounceTimer);
+  }
+  syncEventDebounceTimer = setTimeout(() => {
+    syncEventDebounceTimer = null;
+    void runBackgroundSync('sse');
+  }, SYNC_EVENTS_SYNC_DEBOUNCE_MS);
+}
+
+function parseSyncStreamEventPayload(raw: string): ParsedSyncStreamEvent | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const obj = parsed as Record<string, unknown>;
+
+    const payload: ParsedSyncStreamEvent = {};
+    if (typeof obj.cursor === 'number' && Number.isFinite(obj.cursor)) {
+      payload.cursor = Math.max(0, Math.trunc(obj.cursor));
+    }
+    if (typeof obj.sourceDeviceId === 'string') {
+      payload.sourceDeviceId = obj.sourceDeviceId;
+    } else if (obj.sourceDeviceId === null) {
+      payload.sourceDeviceId = null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function handleSyncStreamEvent(eventName: string, data: string): void {
+  if (eventName !== 'sync_change' && eventName !== 'hello') return;
+  const payload = parseSyncStreamEventPayload(data);
+  if (!payload) return;
+
+  if (eventName === 'sync_change') {
+    const localDeviceId = getSyncSessionDeviceId();
+    if (localDeviceId && payload.sourceDeviceId === localDeviceId) {
+      return;
+    }
+  }
+
+  if (typeof payload.cursor === 'number') {
+    if (payload.cursor <= lastSyncEventCursorSeen) return;
+    lastSyncEventCursorSeen = payload.cursor;
+  }
+
+  const status = getSyncStatus();
+  if (!status.configured || !status.loggedIn) return;
+
+  // Catch up quickly if the stream reports a newer cursor than local state,
+  // and coalesce bursts into one sync run.
+  if (typeof payload.cursor === 'number' && payload.cursor <= status.cursor) return;
+  scheduleSyncFromRemoteEvent();
+}
+
+async function consumeSyncEventStream(signal: AbortSignal): Promise<void> {
+  const response = await openSyncEventsStream(signal);
+  const body = response.body;
+  if (!body) {
+    throw new Error('Sync events stream did not provide a response body');
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = '';
+  let currentEventName = 'message';
+  let currentDataLines: string[] = [];
+
+  const flushEvent = () => {
+    if (currentDataLines.length === 0) {
+      currentEventName = 'message';
+      return;
+    }
+    handleSyncStreamEvent(currentEventName, currentDataLines.join('\n'));
+    currentEventName = 'message';
+    currentDataLines = [];
+  };
+
+  while (!signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffered += decoder.decode(value, { stream: true });
+    while (true) {
+      const lineBreakIndex = buffered.indexOf('\n');
+      if (lineBreakIndex < 0) break;
+
+      let line = buffered.slice(0, lineBreakIndex);
+      buffered = buffered.slice(lineBreakIndex + 1);
+      if (line.endsWith('\r')) {
+        line = line.slice(0, -1);
+      }
+
+      if (line.length === 0) {
+        flushEvent();
+        continue;
+      }
+      if (line.startsWith(':')) continue;
+      if (line.startsWith('event:')) {
+        currentEventName = line.slice('event:'.length).trim() || 'message';
+        continue;
+      }
+      if (line.startsWith('data:')) {
+        currentDataLines.push(line.slice('data:'.length).trimStart());
+      }
+    }
+  }
+
+  const trailing = decoder.decode();
+  if (trailing.length > 0) {
+    buffered += trailing;
+  }
+  if (buffered.trim().length > 0 && buffered.startsWith('data:')) {
+    currentDataLines.push(buffered.slice('data:'.length).trimStart());
+  }
+  flushEvent();
+}
+
+async function runSyncEventsLoop(signal: AbortSignal): Promise<void> {
+  let retryDelayMs = SYNC_EVENTS_RETRY_BASE_MS;
+
+  while (!signal.aborted) {
+    const status = getSyncStatus();
+    if (!status.configured || !status.loggedIn) {
+      lastSyncEventCursorSeen = 0;
+      await waitWithAbort(signal, SYNC_EVENTS_IDLE_WAIT_MS);
+      continue;
+    }
+
+    try {
+      await consumeSyncEventStream(signal);
+      if (signal.aborted) break;
+      await waitWithAbort(signal, SYNC_EVENTS_RETRY_BASE_MS);
+      retryDelayMs = SYNC_EVENTS_RETRY_BASE_MS;
+    } catch (err) {
+      if (signal.aborted) break;
+      const message = err instanceof Error ? err.message : String(err);
+      nfcLog('warn', `[sync-events] stream disconnected: ${message}`);
+      const endpointMissing = /sync api 404/i.test(message.toLowerCase());
+      if (endpointMissing) {
+        await waitWithAbort(signal, AUTO_SYNC_FALLBACK_INTERVAL_MS);
+        retryDelayMs = SYNC_EVENTS_RETRY_BASE_MS;
+      } else {
+        await waitWithAbort(signal, retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, SYNC_EVENTS_RETRY_MAX_MS);
+      }
+    }
+  }
+}
+
+function startSyncEventsLoop(): void {
+  if (syncEventsLoopPromise) return;
+
+  const controller = new AbortController();
+  syncEventsLoopAbort = controller;
+  syncEventsLoopPromise = runSyncEventsLoop(controller.signal)
+    .catch((err) => {
+      if (controller.signal.aborted) return;
+      const message = err instanceof Error ? err.message : String(err);
+      nfcLog('warn', `[sync-events] loop crashed: ${message}`);
+    })
+    .finally(() => {
+      if (syncEventsLoopAbort === controller) {
+        syncEventsLoopAbort = null;
+      }
+      syncEventsLoopPromise = null;
+    });
+}
+
+function stopSyncEventsLoop(): void {
+  if (syncEventDebounceTimer) {
+    clearTimeout(syncEventDebounceTimer);
+    syncEventDebounceTimer = null;
+  }
+  if (!syncEventsLoopAbort) return;
+  syncEventsLoopAbort.abort();
+  syncEventsLoopAbort = null;
+}
+
+async function runBackgroundSync(reason: BackgroundSyncReason): Promise<void> {
+  if (autoSyncRunning) {
+    autoSyncRerunRequested = true;
+    return;
+  }
 
   const status = getSyncStatus();
   if (!status.configured || !status.loggedIn) return;
@@ -369,27 +624,35 @@ async function runBackgroundSync(reason: 'startup' | 'interval'): Promise<void> 
         `[sync] ${reason}: push sent=${result.push.sent}, applied=${result.push.applied}; ` +
         `pull received=${result.pull.received}, applied=${result.pull.applied}, deleted=${result.pull.deleted}`
       );
+      emitSyncAppliedToRenderer(result, reason);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     nfcLog('warn', `[sync] ${reason} failed: ${msg}`);
   } finally {
     autoSyncRunning = false;
+    if (autoSyncRerunRequested) {
+      autoSyncRerunRequested = false;
+      void runBackgroundSync('queued');
+    }
   }
 }
 
 function startBackgroundSyncLoop(): void {
   if (autoSyncTimer) return;
   void runBackgroundSync('startup');
+  startSyncEventsLoop();
   autoSyncTimer = setInterval(() => {
     void runBackgroundSync('interval');
-  }, AUTO_SYNC_INTERVAL_MS);
+  }, AUTO_SYNC_FALLBACK_INTERVAL_MS);
 }
 
 function stopBackgroundSyncLoop(): void {
-  if (!autoSyncTimer) return;
-  clearInterval(autoSyncTimer);
-  autoSyncTimer = null;
+  stopSyncEventsLoop();
+  if (autoSyncTimer) {
+    clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+  }
 }
 
 function applyLockedZoom(win: BrowserWindow | null) {
@@ -521,19 +784,130 @@ app.on('ready', async () => {
 
   // Register card and vault IPC handlers now that nfcBinding exists.
   registerCardHandlers(nfcBinding, nfcLog);
-  registerVaultHandlers(nfcBinding, nfcLog);
+  registerVaultHandlers(nfcBinding, nfcLog, { isVaultUnlocked });
   registerSyncHandlers(nfcLog, { getMachineSecret });
   startBackgroundSyncLoop();
 
   // Start the named-pipe bridge that feeds the browser extension.
-  bridgeServer = startBridgeServer(nfcBinding, nfcLog);
+  bridgeServer = startBridgeServer(nfcBinding, nfcLog, { isVaultUnlocked });
 
   // Keep the native messaging host registration up-to-date so the browser
   // extension always points to the correct install location.
   registerNativeHost((msg) => nfcLog('info', msg));
 
+  ipcMain.handle('app:lock', () => {
+    setVaultLocked();
+    return { ok: true as const };
+  });
+  ipcMain.handle('app:relaunch', () => {
+    app.relaunch();
+    setImmediate(() => app.exit(0));
+    return { ok: true as const };
+  });
+
   // Allow the renderer to abort any in-progress card-wait polling loop.
   ipcMain.handle('nfc:cancel', () => { cancelCardWait(); });
+
+  // App-lock PIN handlers (main-process only; renderer never sees verifier data).
+  ipcMain.handle('pin:has', () => hasPinConfigured());
+  ipcMain.handle('pin:set', (_event: IpcMainInvokeEvent, pin: string) => {
+    if (hasPinConfigured()) {
+      throw new Error('PIN is already configured. Use Change PIN or PIN recovery.');
+    }
+    setPin(pin);
+    setVaultUnlocked();
+    return { ok: true as const };
+  });
+  ipcMain.handle('pin:verify', (_event: IpcMainInvokeEvent, pin: string) => {
+    const result = verifyPin(pin);
+    if (result.ok) {
+      setVaultUnlocked();
+    }
+    return result;
+  });
+  ipcMain.handle('pin:change', (_event: IpcMainInvokeEvent, currentPin: string, newPin: string) =>
+    changePin(currentPin, newPin)
+  );
+  ipcMain.handle('pin:recovery:capabilities', () => {
+    const syncStatus = getSyncStatus();
+    return {
+      accountRecoveryAvailable: syncStatus.configured,
+      destructiveResetAvailable: true as const,
+    };
+  });
+  ipcMain.handle('pin:recovery:start', async (_event: IpcMainInvokeEvent, payload?: PinRecoveryStartDto) => {
+    if (!hasPinConfigured()) {
+      return { ok: false as const, reason: 'NO_PIN' as const };
+    }
+
+    const syncStatus = getSyncStatus();
+    const syncRequired = syncStatus.configured;
+    if (!syncRequired) {
+      return {
+        ok: false as const,
+        reason: 'NO_SECURE_RECOVERY' as const,
+        message: 'Secure account recovery is unavailable on this device. Use destructive reset to continue.',
+      };
+    }
+
+    const password = typeof payload?.password === 'string' ? payload.password.trim() : '';
+    const mfaCode = typeof payload?.mfaCode === 'string' ? payload.mfaCode.trim() : undefined;
+    if (!password) {
+      return { ok: false as const, reason: 'SYNC_PASSWORD_REQUIRED' as const };
+    }
+
+    try {
+      await loginSync(password, mfaCode && mfaCode.length > 0 ? mfaCode : undefined);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const lowered = message.toLowerCase();
+      const code = typeof err === 'object' && err !== null && 'code' in err
+        ? (err as { code?: string }).code
+        : undefined;
+      if (code === 'MFA_REQUIRED') {
+        return { ok: false as const, reason: 'MFA_REQUIRED' as const };
+      }
+      if (code === 'INVALID_MFA_CODE') {
+        return { ok: false as const, reason: 'INVALID_MFA_CODE' as const };
+      }
+      if (
+        !mfaCode &&
+        (lowered.includes('mfa_required') || lowered.includes('mfa code required') || lowered.includes('sync api 400: bad request'))
+      ) {
+        return { ok: false as const, reason: 'MFA_REQUIRED' as const };
+      }
+      if (lowered.includes('invalid_mfa_code') || lowered.includes('invalid mfa code')) {
+        return { ok: false as const, reason: 'INVALID_MFA_CODE' as const };
+      }
+      return { ok: false as const, reason: 'SYNC_AUTH_FAILED' as const, message };
+    }
+
+    const recovery = startPinRecovery();
+    return {
+      ok: true as const,
+      token: recovery.token,
+      expiresAt: recovery.expiresAt,
+      syncRequired,
+    };
+  });
+  ipcMain.handle('pin:recovery:destructiveReset', async () => {
+    setVaultLocked();
+    clearUnlockedVaultRootKey();
+    cancelCardWait();
+    clearSyncConfigAndSession();
+    wipeVault();
+    resetPin();
+    return { ok: true as const };
+  });
+  ipcMain.handle('pin:recovery:complete', (_event: IpcMainInvokeEvent, payload: PinRecoveryCompleteDto) => {
+    const token = typeof payload?.token === 'string' ? payload.token : '';
+    const newPin = typeof payload?.newPin === 'string' ? payload.newPin : '';
+    const result = completePinRecovery(token, newPin);
+    if (result.ok) {
+      setVaultUnlocked();
+    }
+    return result;
+  });
 
   // Clear the system clipboard from the main process (no focus restriction).
   ipcMain.handle('clipboard:clear', () => { clipboard.writeText(''); });

@@ -87,6 +87,10 @@ interface TokenResponse {
 
 interface SyncLoginErrorResponse {
   error?: string;
+  code?: string;
+  message?: string;
+  reason?: string;
+  detail?: string;
   mfaRequired?: boolean;
 }
 
@@ -114,6 +118,37 @@ interface SyncAuthStatusResponse {
   userCount?: number;
   hasUsers?: boolean;
   bootstrapped?: boolean;
+}
+
+interface SyncAuthMeResponse {
+  userId: string;
+  username: string;
+  isAdmin: boolean;
+  inviteCreationPolicy: 'admin' | 'any';
+}
+
+interface SyncCreateInviteResponse {
+  id: string;
+  token: string;
+  inviteUrl: string;
+  serverUrl: string;
+  note: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+interface SyncInviteListItemResponse {
+  id: string;
+  note: string | null;
+  expiresAt: string;
+  expired: boolean;
+  used: boolean;
+  usedAt: string | null;
+  createdAt: string;
+}
+
+interface SyncListInvitesResponse {
+  invites: SyncInviteListItemResponse[];
 }
 
 interface SyncDevicesResponse {
@@ -193,6 +228,33 @@ export interface SyncDevice {
   lastSeenAt: string;
   active: boolean;
   isCurrent: boolean;
+}
+
+export interface SyncAuthMe {
+  userId: string;
+  username: string;
+  isAdmin: boolean;
+  inviteCreationPolicy: 'admin' | 'any';
+}
+
+export interface SyncInviteToken {
+  id: string;
+  token: string;
+  inviteUrl: string;
+  serverUrl: string;
+  note: string | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface SyncInviteListItem {
+  id: string;
+  note: string | null;
+  expiresAt: string;
+  expired: boolean;
+  used: boolean;
+  usedAt: string | null;
+  createdAt: string;
 }
 
 function configPath(): string {
@@ -467,6 +529,15 @@ async function requestAuthedJson<T>(
   inputPath: string,
   init: RequestInit = {}
 ): Promise<T> {
+  const response = await requestAuthedRaw(config, inputPath, init);
+  return parseJsonResponse<T>(response);
+}
+
+async function requestAuthedRaw(
+  config: SyncConfig,
+  inputPath: string,
+  init: RequestInit = {}
+): Promise<Response> {
   let session = readSession();
   if (!session) throw new Error('Not logged in to sync server');
 
@@ -477,7 +548,7 @@ async function requestAuthedJson<T>(
   }
 
   if (!response.ok) throw await throwApiError(response);
-  return parseJsonResponse<T>(response);
+  return response;
 }
 
 async function requestAuthedJsonWithRouteFallback<T>(
@@ -530,6 +601,10 @@ function makeStatus(config: SyncConfig | null, session: SyncSession | null): Syn
 
 export function getSyncStatus(): SyncStatus {
   return makeStatus(readConfig(), readSession());
+}
+
+export function getSyncSessionDeviceId(): string | null {
+  return readSession()?.deviceId ?? null;
 }
 
 export function setSyncConfig(input: { baseUrl: string; username: string; deviceName?: string }): SyncStatus {
@@ -605,6 +680,58 @@ export async function checkSyncUsernameExists(): Promise<boolean> {
   return payload.exists === true;
 }
 
+export async function getSyncAuthMe(): Promise<SyncAuthMe> {
+  const config = requireConfig();
+  return requestAuthedJson<SyncAuthMeResponse>(config, '/v1/auth/me');
+}
+
+export async function openSyncEventsStream(signal: AbortSignal): Promise<Response> {
+  const config = requireConfig();
+  const response = await requestAuthedRaw(config, '/v1/sync/events', {
+    method: 'GET',
+    headers: {
+      accept: 'text/event-stream',
+      'cache-control': 'no-cache',
+    },
+    signal,
+  });
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('text/event-stream')) {
+    throw new Error('Sync events endpoint returned an unexpected response');
+  }
+
+  return response;
+}
+
+export async function createSyncInvite(input: { note?: string; expiresIn?: string }): Promise<SyncInviteToken> {
+  const config = requireConfig();
+  return requestAuthedJson<SyncCreateInviteResponse>(config, '/v1/invite/create', {
+    method: 'POST',
+    body: JSON.stringify({
+      note: input.note?.trim() || undefined,
+      expiresIn: input.expiresIn?.trim() || undefined,
+    }),
+  });
+}
+
+export async function listSyncInvites(): Promise<SyncInviteListItem[]> {
+  const config = requireConfig();
+  const response = await requestAuthedJson<SyncListInvitesResponse>(config, '/v1/invite/list');
+  return Array.isArray(response.invites) ? response.invites : [];
+}
+
+export async function revokeSyncInvite(id: string): Promise<void> {
+  const config = requireConfig();
+  const trimmed = id.trim();
+  if (trimmed.length === 0) {
+    throw new Error('Invite id is required');
+  }
+  await requestAuthedJson<Record<string, never>>(config, `/v1/invite/${encodeURIComponent(trimmed)}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function getSyncDevices(): Promise<SyncDevice[]> {
   const config = requireConfig();
   const response = await requestAuthedJson<SyncDevicesResponse>(config, '/v1/auth/devices');
@@ -663,10 +790,17 @@ export async function bootstrapSync(password: string, bootstrapToken: string): P
   return makeStatus(config, readSession());
 }
 
-export async function registerSync(password: string): Promise<SyncStatus> {
+export async function registerSync(password: string, inviteToken?: string): Promise<SyncStatus> {
   const config = requireConfig();
+  const trimmedInviteToken = inviteToken?.trim();
+  const headers: HeadersInit = {};
+  if (trimmedInviteToken && trimmedInviteToken.length > 0) {
+    headers['x-invite-token'] = trimmedInviteToken;
+  }
+
   const response = await requestRaw(config, '/v1/auth/register', {
     method: 'POST',
+    headers,
     body: JSON.stringify({
       username: config.username,
       password,
@@ -704,28 +838,69 @@ export async function loginSync(password: string, mfaCode?: string): Promise<Syn
     body: JSON.stringify(requestBody),
   });
   if (!response.ok) {
-    if (response.status === 401) {
-      let details: SyncLoginErrorResponse | null = null;
-      try {
-        details = await parseJsonResponse<SyncLoginErrorResponse>(response);
-      } catch {
-        // Fall through to generic API error handling below.
+    let responseText = '';
+    let details: SyncLoginErrorResponse | null = null;
+    try {
+      responseText = await response.text();
+      if (responseText.trim().length > 0) {
+        const parsed = JSON.parse(responseText) as unknown;
+        if (parsed && typeof parsed === 'object') {
+          details = parsed as SyncLoginErrorResponse;
+        } else if (typeof parsed === 'string') {
+          responseText = parsed;
+        }
       }
-      if (details?.mfaRequired || details?.error === 'MFA_REQUIRED') {
-        throw Object.assign(new Error('MFA code required for login.'), {
-          code: 'MFA_REQUIRED',
-        });
-      }
-      if (details?.error === 'INVALID_MFA_CODE') {
-        throw Object.assign(new Error('Invalid MFA code.'), {
-          code: 'INVALID_MFA_CODE',
-        });
-      }
-      if (details?.error && details.error.length > 0) {
-        throw new Error(`Sync API ${response.status}: ${details.error}`);
-      }
+    } catch {
+      // Fall through to generic API error handling below.
     }
-    throw await throwApiError(response);
+
+    const tokenParts = [
+      details?.code,
+      details?.error,
+      details?.reason,
+      details?.message,
+      details?.detail,
+      responseText,
+    ]
+      .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+      .map((part) => part.trim());
+    const token = (tokenParts[0] ?? '').toUpperCase();
+    const normalizedText = tokenParts.join(' | ').toLowerCase();
+    if (details?.mfaRequired || token === 'MFA_REQUIRED' || token === 'MFA_CODE_REQUIRED') {
+      throw Object.assign(new Error('MFA code required for login.'), {
+        code: 'MFA_REQUIRED',
+      });
+    }
+    if (token === 'INVALID_MFA_CODE' || token === 'MFA_CODE_INVALID') {
+      throw Object.assign(new Error('Invalid MFA code.'), {
+        code: 'INVALID_MFA_CODE',
+      });
+    }
+    if (
+      normalizedText.includes('mfa_required')
+      || normalizedText.includes('mfa code required')
+      || normalizedText.includes('authenticator code required')
+      || normalizedText.includes('two-factor')
+      || normalizedText.includes('2fa')
+    ) {
+      throw Object.assign(new Error('MFA code required for login.'), {
+        code: 'MFA_REQUIRED',
+      });
+    }
+    if (
+      normalizedText.includes('invalid_mfa_code')
+      || normalizedText.includes('invalid mfa code')
+      || normalizedText.includes('invalid one-time code')
+      || normalizedText.includes('invalid authenticator code')
+      || normalizedText.includes('totp invalid')
+    ) {
+      throw Object.assign(new Error('Invalid MFA code.'), {
+        code: 'INVALID_MFA_CODE',
+      });
+    }
+
+    const detailMessage = tokenParts[0] ?? response.statusText;
+    throw new Error(`Sync API ${response.status}: ${detailMessage}`);
   }
   const payload = await parseJsonResponse<TokenResponse>(response);
   prepareLocalVaultForUser(payload.userId);
