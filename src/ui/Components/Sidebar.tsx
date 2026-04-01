@@ -123,7 +123,7 @@ export const Sidebar = ({
             <ShieldCheck className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h1 className="text-[17px] font-bold text-hi leading-tight">SecurePass</h1>
+            <h1 className="text-[17px] font-bold text-hi leading-tight">SecurePass NFC</h1>
             <p className="text-[12px] text-lo leading-tight mt-0.5">NFC Password Manager</p>
           </div>
         </div>

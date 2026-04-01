@@ -8,6 +8,7 @@ A clean, modern, and highly reusable template for building Electron applications
 - **Clean Architecture**: Pure C++ logic is strictly separated from V8/N-API bindings.
 - **End-to-End Type Safety**: Fully typed IPC bridge between React and the Electron main process.
 - **Cross-Platform CI/CD**: GitHub Actions workflow included for building on Windows, Mac, and Linux.
+- **In-App Updates**: Stable-channel update checks from GitHub Releases with staged rollout support.
 
 ## Prerequisites
 To compile the native C++ addon, your system needs:
@@ -40,6 +41,11 @@ To compile the native C++ addon, your system needs:
 - `src/electron`: Electron main process and preload scripts.
 - `src/ui`: React frontend.
 - `src/types`: Shared TypeScript definitions for IPC.
+
+## Release Publishing
+- CI checks/builds run in `.github/workflows/ci.yml` (push/PR).
+- Release publishing runs in `.github/workflows/release.yml` (on GitHub release publish).
+- Release job uploads Windows (`.exe`, `latest.yml`, `.blockmap`) and Linux (`.AppImage`, linux update metadata) artifacts to GitHub Releases for in-app updates.
 
 ## How to Rename the Addon
 If you want to change the name from `myaddon` to something else:

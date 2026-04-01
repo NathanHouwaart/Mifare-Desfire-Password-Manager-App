@@ -100,7 +100,7 @@ export const OnboardingScreen = ({
             <div className="flex items-center gap-3">
               <SetupBrandShield size="md" />
               <div>
-                <p className="text-[18px] font-semibold text-hi leading-tight">SecurePass Setup</p>
+                <p className="text-[18px] font-semibold text-hi leading-tight">SecurePass NFC Setup</p>
                 <p className="text-[13px] text-lo">
                   {step === 'welcome' ? 'Welcome' : 'Step 1 of 2 â€” account type'}
                 </p>
@@ -135,7 +135,7 @@ export const OnboardingScreen = ({
           {step === 'welcome' ? (
             <div key="welcome" className="px-8 py-10 flex flex-col items-center text-center [animation:wizardSlideHorizontal_0.28s_cubic-bezier(0.22,1,0.36,1)_both]">
               <SetupBrandShield size="lg" className="mb-6" />
-              <h1 className="text-[30px] font-bold text-hi leading-tight tracking-tight">Welcome to SecurePass</h1>
+              <h1 className="text-[30px] font-bold text-hi leading-tight tracking-tight">Welcome to SecurePass NFC</h1>
               <p className="mt-3 text-[16px] text-lo max-w-[360px] leading-relaxed">
                 Your passwords, protected by NFC hardware. Quick to set up, easy to use.
               </p>

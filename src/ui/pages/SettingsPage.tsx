@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode, type ComponentType } from 'react';
-import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe, Cloud } from 'lucide-react';
+import { Paintbrush, Shield, Clipboard, Cpu, HardDrive, SlidersHorizontal, Search, X, Loader2, Globe, Cloud, Download } from 'lucide-react';
 
 const PIN_LENGTH = 6;
 const PIN_REGEX = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
@@ -179,6 +179,10 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
   const [syncNowBusy, setSyncNowBusy] = useState(false);
   const [vaultKeyStatus, setVaultKeyStatus] = useState<SyncVaultKeyStatusDto | null>(null);
   const [mfaStatus, setMfaStatus] = useState<SyncMfaStatusDto | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<AppUpdateStatusDto | null>(null);
+  const [updateFeedback, setUpdateFeedback] = useState<{ type: 'ok' | 'err'; message: string } | null>(null);
+  const [updateCheckBusy, setUpdateCheckBusy] = useState(false);
+  const [updateInstallBusy, setUpdateInstallBusy] = useState(false);
 
   const tog = (key: string, cur: boolean, set: (v: boolean) => void) => {
     const next = !cur; set(next); localStorage.setItem(key, String(next));
@@ -391,14 +395,36 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }
   };
 
+  const refreshUpdateStatus = async (): Promise<AppUpdateStatusDto | null> => {
+    try {
+      const status = await window.electron['update:getStatus']();
+      setUpdateStatus(status);
+      return status;
+    } catch {
+      setUpdateStatus(null);
+      return null;
+    }
+  };
+
   useEffect(() => {
     const init = async () => {
       const status = await refreshSyncStatus();
       await refreshVaultKeyStatus();
       await refreshMfaStatus(status);
+      await refreshUpdateStatus();
     };
     void init();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (typeof window.electron.onUpdateStatusChanged !== 'function') return;
+    const unsubscribe = window.electron.onUpdateStatusChanged((status) => {
+      setUpdateStatus(status);
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const onSyncModeChanged = (event: Event) => {
@@ -459,9 +485,67 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
     }));
   };
 
+  const handleCheckForUpdates = async () => {
+    setUpdateCheckBusy(true);
+    setUpdateFeedback(null);
+    try {
+      const status = await window.electron['update:checkNow']();
+      setUpdateStatus(status);
+      if (status.state === 'up-to-date') {
+        setUpdateFeedback({ type: 'ok', message: 'You are already on the latest version.' });
+      } else if (status.state === 'not-eligible') {
+        const pct = typeof status.stagingPercentage === 'number' ? status.stagingPercentage : 100;
+        const bucket = typeof status.rolloutBucket === 'number' ? status.rolloutBucket : 0;
+        setUpdateFeedback({
+          type: 'ok',
+          message: `Update found, but this device is not in the current staged rollout (${pct}% / bucket ${bucket}).`,
+        });
+      }
+    } catch (e) {
+      setUpdateFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setUpdateCheckBusy(false);
+      window.setTimeout(() => setUpdateFeedback(null), 6000);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    setUpdateInstallBusy(true);
+    setUpdateFeedback(null);
+    try {
+      const result = await window.electron['update:installNow']();
+      if (result.ok) {
+        setUpdateFeedback({ type: 'ok', message: 'Installing update and restarting SecurePass NFC…' });
+      } else {
+        setUpdateFeedback({ type: 'err', message: result.error });
+      }
+    } catch (e) {
+      setUpdateFeedback({ type: 'err', message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setUpdateInstallBusy(false);
+      window.setTimeout(() => setUpdateFeedback(null), 6000);
+    }
+  };
+
   const [settingsSearch, setSettingsSearch] = useState('');
   const q = settingsSearch.trim().toLowerCase();
   const show = (...texts: string[]) => !q || texts.some(t => t.toLowerCase().includes(q));
+  const appVersionLabel = updateStatus?.currentVersion ?? 'Unknown';
+  const updateStateLabel = (() => {
+    switch (updateStatus?.state) {
+      case 'checking': return 'Checking for updates';
+      case 'update-available': return 'Update available';
+      case 'downloading': return 'Downloading update';
+      case 'downloaded': return 'Ready to install';
+      case 'up-to-date': return 'Up to date';
+      case 'not-eligible': return 'Waiting for staged rollout';
+      case 'error': return 'Update check failed';
+      default: return 'Idle';
+    }
+  })();
+  const updateProgressPercent = typeof updateStatus?.downloadPercent === 'number'
+    ? Math.max(0, Math.min(100, updateStatus.downloadPercent))
+    : 0;
 
   const showSec = {
     appearance: show('Light Mode', 'Switch between dark and light theme'),
@@ -477,9 +561,10 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
              || show('Retry Attempts', 'Number of times to retry a failed connection'),
     sync:       show('Backup & Sync', 'Live sync push alerts + 15 minute fallback polling')
              || show('Mode', 'Open Sync Settings', 'Sync Now', 'Last successful sync', 'Last sync error', '2FA', 'Authenticator', '2FA status'),
+    updates:    show('App Updates', 'Check for updates', 'Restart to install', 'Stable channel', 'Current version', 'staged rollout'),
     data:       show('Export Vault', 'Save an encrypted backup of your passwords')
              || show('Import Vault', 'Restore passwords from an encrypted backup')
-             || show('App Version', '0.1.0') || show('Stack', 'Electron React C++')
+             || show('App Version', appVersionLabel) || show('Stack', 'Electron React C++')
              || show('Clear All Data', 'Permanently delete all passwords and reset the vault'),
     extension:  show('Browser Extension', 'Autofill passwords in Chrome and Firefox')
              || show('Reload Registration', 'Re-register the native messaging host')
@@ -721,14 +806,14 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
             {show('Browser Extension', 'Autofill passwords in Chrome and Firefox') && (
               <div className="px-5 py-4">
                 <p className="text-[14px] text-lo leading-relaxed">
-                  The SecurePass extension autofills passwords in Chrome and Firefox using your NFC card.
+                  The SecurePass NFC extension autofills passwords in Chrome and Firefox using your NFC card.
                   After installing the app, load the extension manually once, then it will always stay registered.
                 </p>
                 <ol className="mt-3 space-y-1.5 text-[13px] text-dim list-decimal list-inside leading-relaxed">
                   <li>Click <strong className="text-lo">Open Extension Folder</strong> below</li>
                   <li>In Chrome: go to <code className="text-accent">chrome://extensions</code> → enable <em>Developer mode</em> → <em>Load unpacked</em> → select the folder</li>
                   <li>In Firefox: go to <code className="text-accent">about:debugging</code> → <em>This Firefox</em> → <em>Load Temporary Add-on</em> → select <code className="text-accent">manifest.json</code></li>
-                  <li>The native host is registered automatically every time SecurePass starts</li>
+                  <li>The native host is registered automatically every time SecurePass NFC starts</li>
                 </ol>
               </div>
             )}
@@ -838,6 +923,77 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
           </Section>
         )}
 
+        {/* App Updates */}
+        {showSec.updates && (
+          <Section title="App Updates" icon={Download}>
+            <InfoRow label="Current Version" value={appVersionLabel} />
+            <InfoRow label="Channel" value="Stable" />
+            <InfoRow label="Update Status" value={updateStateLabel} />
+
+            {updateStatus?.availableVersion && (
+              <InfoRow label="Available Version" value={updateStatus.availableVersion} />
+            )}
+
+            {updateStatus?.state === 'not-eligible' && (
+              <div className="px-5 py-4">
+                <p className="text-[13px] text-lo leading-relaxed">
+                  This release is rolling out gradually. Your device bucket is{' '}
+                  <span className="text-hi font-medium">{updateStatus.rolloutBucket ?? 0}</span>
+                  {typeof updateStatus.stagingPercentage === 'number' && (
+                    <> and the current rollout is <span className="text-hi font-medium">{updateStatus.stagingPercentage}%</span>.</>
+                  )}
+                </p>
+              </div>
+            )}
+
+            {updateStatus?.state === 'downloading' && (
+              <div className="px-5 py-4 flex flex-col gap-2">
+                <div className="h-2 rounded-full bg-input border border-edge overflow-hidden">
+                  <div
+                    className="h-full bg-accent-solid transition-[width] duration-150"
+                    style={{ width: `${updateProgressPercent}%` }}
+                  />
+                </div>
+                <p className="text-[13px] text-lo">
+                  Downloading {updateProgressPercent.toFixed(1)}%
+                </p>
+              </div>
+            )}
+
+            <ButtonRow
+              label="Check for Updates"
+              description="Checks GitHub Releases for a newer stable version."
+              buttonLabel={updateCheckBusy || updateStatus?.state === 'checking' ? 'Checking…' : 'Check Now'}
+              busy={updateCheckBusy || updateStatus?.state === 'checking'}
+              onClick={handleCheckForUpdates}
+            />
+
+            {updateStatus?.state === 'downloaded' && (
+              <ButtonRow
+                label="Install Downloaded Update"
+                description="Restart SecurePass NFC and apply the downloaded update."
+                buttonLabel={updateInstallBusy ? 'Installing…' : 'Restart to Install'}
+                busy={updateInstallBusy}
+                onClick={handleInstallUpdate}
+              />
+            )}
+
+            {updateStatus?.error && (
+              <div className="px-5 py-4">
+                <p className="text-[13px] text-err">Update error: {updateStatus.error}</p>
+              </div>
+            )}
+
+            {updateFeedback && (
+              <div className="px-5 py-4">
+                <p className={`text-[13px] ${updateFeedback.type === 'ok' ? 'text-ok' : 'text-err'}`}>
+                  {updateFeedback.message}
+                </p>
+              </div>
+            )}
+          </Section>
+        )}
+
         {/* Data */}
         {showSec.data && (
           <Section title="Data" icon={HardDrive}>
@@ -861,7 +1017,7 @@ export const SettingsPage = ({ theme, onToggleTheme, terminalEnabled, onToggleTe
                 onClick={handleImport}
               />
             )}
-            {show('App Version', '0.1.0') && <InfoRow label="App Version" value="0.1.0" />}
+            {show('App Version', appVersionLabel) && <InfoRow label="App Version" value={appVersionLabel} />}
             {show('Stack', 'Electron React C++') && <InfoRow label="Stack" value="Electron + React + C++" />}
             {show('Clear All Data', 'Permanently delete all passwords and reset the vault') && (
               <ButtonRow

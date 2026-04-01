@@ -27,6 +27,7 @@ interface LockScreenProps {
 }
 
 export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: LockScreenProps) => {
+  const [appVersion, setAppVersion] = useState<string>('...');
   const [pinStatus, setPinStatus] = useState<PinStatus>(
     mode === 'setup' ? 'missing' : mode === 'unlock' ? 'configured' : 'loading'
   );
@@ -61,6 +62,21 @@ export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: Lo
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void window.electron['app:getVersion']()
+      .then((version) => {
+        if (cancelled) return;
+        setAppVersion(version);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setAppVersion('Unknown');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
@@ -422,9 +438,9 @@ export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: Lo
     ? 'Checking PIN status...'
     : isSettingPin
     ? (phase === 'enter'
-      ? 'Choose 6 digits you\'ll type each time SecurePass opens.'
+      ? 'Choose 6 digits you\'ll type each time SecurePass NFC opens.'
       : 'Re-enter the same 6 digits to confirm.')
-    : 'Enter your 6-digit PIN to unlock SecurePass.';
+    : 'Enter your 6-digit PIN to unlock SecurePass NFC.';
 
   return (
     <div role="main" className="relative h-screen w-screen overflow-hidden bg-page">
@@ -479,7 +495,7 @@ export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: Lo
                   </div>
 
                   <div className="min-w-0">
-                    <h1 className="truncate text-[22px] font-bold leading-tight tracking-tight text-hi">SecurePass</h1>
+                    <h1 className="truncate text-[22px] font-bold leading-tight tracking-tight text-hi">SecurePass NFC</h1>
                     <p className="mt-0.5 truncate text-[13px] uppercase tracking-wide text-lo">NFC Password Manager</p>
                   </div>
                 </div>
@@ -591,11 +607,11 @@ export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: Lo
             </div>
 
             <div className="border-t border-edge/80 px-6 py-3">
-              <p className="text-center text-[11px] text-dim">v0.1.0 - Secured by MIFARE DESFire EV2</p>
+              <p className="text-center text-[11px] text-dim">v{appVersion} - Secured by MIFARE DESFire EV2</p>
             </div>
           </div>
 
-          <p className="mt-4 text-center text-[13px] text-dim">SecurePass - NFC Password Manager</p>
+          <p className="mt-4 text-center text-[13px] text-dim">SecurePass NFC Password Manager</p>
         </div>
       </div>
 
@@ -617,7 +633,7 @@ export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: Lo
                   {recoveryStep === 'set-pin'
                     ? 'Choose a new 6-digit unlock PIN for this computer.'
                     : recoveryStep === 'confirm-reset'
-                      ? 'This will erase local vault data and restart SecurePass setup.'
+                      ? 'This will erase local vault data and restart SecurePass NFC setup.'
                       : 'Recovering a lost PIN requires account verification. Card-only recovery is disabled.'}
                 </p>
               </div>
@@ -798,7 +814,7 @@ export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: Lo
               {!recoveryCapabilitiesLoading && recoveryStep === 'cant-access' && (
                 <div className="space-y-3">
                   <div className="rounded-xl border border-err-edge bg-err-soft p-3 text-[13px] text-lo">
-                    Without account verification, SecurePass cannot safely recover your PIN. Card-only recovery is disabled.
+                    Without account verification, SecurePass NFC cannot safely recover your PIN. Card-only recovery is disabled.
                   </div>
                   <div className="rounded-xl border border-edge bg-input p-3 text-[13px] text-lo">
                     You can continue to destructive reset, which erases local vault data and restarts setup.
@@ -897,5 +913,3 @@ export const LockScreen = ({ onUnlock, mode = 'auto', onBackToAccountSetup }: Lo
     </div>
   );
 };
-
-
