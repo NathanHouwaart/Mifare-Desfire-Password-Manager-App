@@ -19,6 +19,13 @@ if (!autoUpdater) {
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SHARED_INSTALLATION_ID_FILE = 'sync-installation-id.txt';
+const UPDATE_PREFERENCES_FILE = 'update-preferences.json';
+
+type UpdateCheckReason = 'startup' | 'interval' | 'manual';
+
+type UpdatePreferences = {
+  autoDownloadEnabled: boolean;
+};
 
 interface UpdateManagerDeps {
   log: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -32,6 +39,8 @@ export interface UpdateManagerController {
   getStatus: () => AppUpdateStatusDto;
   checkNow: () => Promise<AppUpdateStatusDto>;
   installNow: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  getPreferences: () => AppUpdatePreferencesDto;
+  setPreferences: (next: AppUpdatePreferencesDto) => AppUpdatePreferencesDto;
 }
 
 function parseErrorMessage(error: unknown): string {
@@ -113,14 +122,36 @@ function snapshotDownloadInfo(progress: ProgressInfo): Pick<
   };
 }
 
+function updatePreferencesPath(): string {
+  return path.join(app.getPath('userData'), UPDATE_PREFERENCES_FILE);
+}
+
+function readUpdatePreferences(): UpdatePreferences {
+  const defaults: UpdatePreferences = { autoDownloadEnabled: true };
+  try {
+    const raw = fs.readFileSync(updatePreferencesPath(), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<UpdatePreferences>;
+    if (typeof parsed.autoDownloadEnabled !== 'boolean') return defaults;
+    return { autoDownloadEnabled: parsed.autoDownloadEnabled };
+  } catch {
+    return defaults;
+  }
+}
+
+function writeUpdatePreferences(next: UpdatePreferences): void {
+  fs.writeFileSync(updatePreferencesPath(), JSON.stringify(next, null, 2), 'utf8');
+}
+
 export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps): UpdateManagerController {
   const installationId = getOrCreateInstallationId();
   const rolloutBucket = toRolloutBucket(installationId);
+  let preferences = readUpdatePreferences();
 
   let started = false;
   let checkInFlight = false;
   let downloadInFlight = false;
   let intervalHandle: NodeJS.Timeout | null = null;
+  let currentCheckReason: UpdateCheckReason | null = null;
 
   let status: AppUpdateStatusDto = {
     state: 'idle',
@@ -163,7 +194,7 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     }
   };
 
-  const checkForUpdates = async (reason: 'startup' | 'interval' | 'manual'): Promise<AppUpdateStatusDto> => {
+  const checkForUpdates = async (reason: UpdateCheckReason): Promise<AppUpdateStatusDto> => {
     if (!canUseUpdater()) {
       if (reason === 'manual') {
         updateStatus({
@@ -188,6 +219,7 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     });
 
     try {
+      currentCheckReason = reason;
       await autoUpdater.checkForUpdates();
     } catch (error) {
       updateStatus({
@@ -197,6 +229,7 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
       });
       log('warn', `[updates] check failed: ${parseErrorMessage(error)}`);
     } finally {
+      currentCheckReason = null;
       checkInFlight = false;
     }
 
@@ -248,7 +281,11 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
       downloadTransferred: undefined,
       downloadTotal: undefined,
     });
-    void startDownload();
+
+    const shouldAutoDownload = preferences.autoDownloadEnabled || currentCheckReason === 'manual';
+    if (shouldAutoDownload) {
+      void startDownload();
+    }
   });
 
   autoUpdater.on('update-not-available', () => {
@@ -317,6 +354,23 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     return { ok: true as const };
   };
 
+  const getPreferences = (): AppUpdatePreferencesDto => ({
+    autoDownloadEnabled: preferences.autoDownloadEnabled,
+  });
+
+  const setPreferences = (next: AppUpdatePreferencesDto): AppUpdatePreferencesDto => {
+    preferences = {
+      autoDownloadEnabled: Boolean(next.autoDownloadEnabled),
+    };
+    try {
+      writeUpdatePreferences(preferences);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log('error', `[updates] Failed to persist update preferences: ${message}`);
+    }
+    return getPreferences();
+  };
+
   const start = (): void => {
     if (started) return;
     started = true;
@@ -352,5 +406,7 @@ export function registerUpdateManager({ log, publishStatus }: UpdateManagerDeps)
     getStatus: () => ({ ...status }),
     checkNow: () => checkForUpdates('manual'),
     installNow,
+    getPreferences,
+    setPreferences,
   };
 }
